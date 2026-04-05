@@ -1,0 +1,15 @@
+[project]
+name = "mnist-art-backend"
+version = "0.1.0"
+description = "FastAPI backend for the MNIST photomosaic web app"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.135.3",
+    "numpy>=2.2.0",
+    "opencv-python-headless>=4.10.0.84",
+    "python-multipart>=0.0.22",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[tool.fastapi]
+entrypoint = "app.main:app"

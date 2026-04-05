@@ -1,0 +1,34 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+
+# Python packaging artifacts
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+build/
+dist/
+
+# Local environment files
+.env
+.env.local
+
+# OS files
+.DS_Store

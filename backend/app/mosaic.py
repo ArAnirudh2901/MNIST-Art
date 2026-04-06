@@ -167,9 +167,16 @@ class MNISTLibrary:
                         progress,
                         "binning_library",
                         "Indexing brightness buckets",
+                        stage_progress=(index + 1) / len(self.means),
                     )
 
-        _emit_progress(progress_callback, 20, "library_ready", "Glyph library primed")
+        _emit_progress(
+            progress_callback,
+            20,
+            "library_ready",
+            "Glyph library primed",
+            stage_progress=1.0,
+        )
 
     def find_best_tile(self, target_patch: np.ndarray, target_brightness: float) -> int:
         if self.images is None or self.means is None:
@@ -264,6 +271,7 @@ def _emit_progress(
     progress: float,
     stage: str,
     message: str,
+    stage_progress: float | None = None,
     **extra: int | float | str,
 ) -> None:
     if progress_callback is None:
@@ -274,6 +282,8 @@ def _emit_progress(
         "stage": stage,
         "message": message,
     }
+    if stage_progress is not None:
+        payload["stageProgress"] = round(stage_progress, 4)
     payload.update(extra)
     progress_callback(payload)
 
@@ -301,6 +311,16 @@ def sanitize_upload_image_bytes(image_bytes: bytes) -> bytes:
         raise MosaicError("Unable to sanitize the uploaded image.")
 
     return sanitized.tobytes()
+
+
+def describe_image_bytes(image_bytes: bytes) -> dict[str, int]:
+    bgr = _decode_source_bgr(image_bytes)
+    height, width = bgr.shape[:2]
+    return {
+        "width": int(width),
+        "height": int(height),
+        "pixel_count": int(width * height),
+    }
 
 
 def generate_mosaic_bytes(
@@ -349,24 +369,67 @@ def generate_mosaic_bytes(
         )
 
     canvas = np.zeros((output_height, output_width), dtype=np.uint8)
+    active_mask = patch_means >= settings.bg_thresh
+    total_active_patches = int(active_mask.sum())
+    total_tiles = rows * cols
     _emit_progress(
         progress_callback,
         36,
         "lattice_lock",
         "Synthesizing tile lattice",
+        stage_progress=1.0,
         completed_rows=0,
         total_rows=rows,
+        totalTiles=total_tiles,
+        activeTiles=total_active_patches,
+        inputPixels=height * width,
+        outputPixels=output_height * output_width,
+        tileSize=settings.tile_size,
+        resolvedUpscale=upscale,
     )
 
     rendered_tile_cache: dict[int, tuple[np.ndarray, float]] = {}
-    progress_step = 56 / rows
+    patches_done = 0
+    scanned_patches = 0
+
+    # Weighted work model: scanning a patch (checking brightness) is cheap,
+    # but actually matching + rendering an active patch is expensive.
+    # These weights control how the progress bar distributes across the two.
+    scan_weight = 0.15
+    match_weight = 0.85
+    match_total_work = max(
+        (total_tiles * scan_weight) + (total_active_patches * match_weight),
+        1.0,
+    )
+
+    # Throttle: emit at most ~80 updates across the entire matching phase
+    # to avoid flooding the poll endpoint while still looking smooth.
+    emit_interval = max(1, total_tiles // 80)
+
+    def _current_fraction() -> float:
+        work_done = (scanned_patches * scan_weight) + (patches_done * match_weight)
+        return min(1.0, work_done / match_total_work)
 
     for row in range(rows):
         for col in range(cols):
+            scanned_patches += 1
             patch = patch_grid[row, col]
             patch_mean = float(patch_means[row, col])
 
             if patch_mean < settings.bg_thresh:
+                # Skipped patch — still counts as scan work for progress.
+                # Emit on throttle interval so the bar moves through dark regions.
+                if scanned_patches % emit_interval == 0:
+                    fraction = _current_fraction()
+                    _emit_progress(
+                        progress_callback,
+                        36 + (56 * fraction),
+                        "glyph_matching",
+                        "Scanning tile grid",
+                        stage_progress=fraction,
+                        completed_rows=row + 1,
+                        total_rows=rows,
+                    )
                 continue
 
             best_index = library.find_best_tile(patch, patch_mean)
@@ -391,15 +454,25 @@ def generate_mosaic_bytes(
             out_x = col * render_size
             canvas[out_y : out_y + render_size, out_x : out_x + render_size] = rendered
 
-        progress = 36 + (progress_step * (row + 1))
-        _emit_progress(
-            progress_callback,
-            progress,
-            "glyph_matching",
-            "Matching and assembling digit cells",
-            completed_rows=row + 1,
-            total_rows=rows,
-        )
+            patches_done += 1
+
+            # Emit on throttle interval, on the very last active patch,
+            # and on the very last scanned patch.
+            if (
+                scanned_patches % emit_interval == 0
+                or patches_done == total_active_patches
+                or scanned_patches == total_tiles
+            ):
+                fraction = _current_fraction()
+                _emit_progress(
+                    progress_callback,
+                    36 + (56 * fraction),
+                    "glyph_matching",
+                    "Matching and assembling digit cells",
+                    stage_progress=fraction,
+                    completed_rows=row + 1,
+                    total_rows=rows,
+                )
 
     _emit_progress(progress_callback, 96, "encoding_frame", "Encoding output mosaic")
     encoded, png = cv2.imencode(".png", canvas)

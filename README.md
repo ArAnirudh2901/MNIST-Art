@@ -80,10 +80,9 @@ in this repo.
 ```bash
 cd /Users/anirudharavalli/Web_Dev/NextJS/mnist-art/backend
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+.venv/bin/pip install -e .
 cp .env.example .env
-uvicorn app.main:app --reload --port 8000
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
 
 Notes:
@@ -278,9 +277,8 @@ bun run build
 
 ```bash
 cd /Users/anirudharavalli/Web_Dev/NextJS/mnist-art/backend
-source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
-python3 -m py_compile app/main.py app/mosaic.py
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
+.venv/bin/python -m py_compile app/main.py app/mosaic.py
 ```
 
 ## MNIST dataset notes
@@ -312,3 +310,17 @@ downloaded or the glyph library has not been built yet.
 - Upload a real image file
 - If the backend returns an image decode error, try a different export of the
   same image
+
+### FastAPI says `python-multipart` is missing
+
+That usually means the backend was started with a global `uvicorn` or `python`
+instead of the project virtual environment, even though
+`backend/pyproject.toml` already includes `python-multipart`.
+
+Start the API with the venv explicitly:
+
+```bash
+cd /Users/anirudharavalli/Web_Dev/NextJS/mnist-art/backend
+.venv/bin/pip install -e .
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```

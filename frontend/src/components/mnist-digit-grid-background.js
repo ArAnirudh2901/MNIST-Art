@@ -5,15 +5,21 @@ import { useEffect, useRef } from "react";
 const SPRITE_TILE_SIZE = 28;
 const SPRITE_COLUMNS = 24;
 const SPRITE_COUNT = 480;
-const POINTER_RADIUS = 150;
+const POINTER_RADIUS = 118;
 const SHOCK_MIN_DURATION_MS = 1200;
 const SHOCK_SPEED = 480;
-const SHOCK_WIDTH = 72;
-const SHOCK_STRENGTH = 16;
+const SHOCK_WIDTH = 52;
+const SHOCK_STRENGTH = 15;
+const SHOCK_RADIUS_MIN = 120;
+const SHOCK_RADIUS_MAX = 200;
+const SHOCK_RADIUS_VIEWPORT_FACTOR = 0.13;
 const ACTIVE_FRAME_INTERVAL_MS = 1000 / 60;
 const IDLE_FRAME_INTERVAL_MS = 1000 / 12;
 const MAX_DPR = 1.5;
-const OFFSCREEN_EXIT_PADDING = 180;
+const MOBILE_GRID_GAP = 24;
+const DESKTOP_GRID_GAP = 30;
+const MOBILE_BASE_SIZE = 9;
+const DESKTOP_BASE_SIZE = 11;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -21,71 +27,6 @@ function clamp(value, min, max) {
 
 function smoothstep(value) {
   return value * value * (3 - (2 * value));
-}
-
-function maxViewportRadius(x, y, width, height) {
-  return Math.max(
-    Math.hypot(x, y),
-    Math.hypot(width - x, y),
-    Math.hypot(x, height - y),
-    Math.hypot(width - x, height - y),
-  );
-}
-
-function fallbackExitDirection(x, y, width, height) {
-  const directions = [
-    { x: -1, y: 0, distance: Math.abs(x) },
-    { x: 1, y: 0, distance: Math.abs(width - x) },
-    { x: 0, y: -1, distance: Math.abs(y) },
-    { x: 0, y: 1, distance: Math.abs(height - y) },
-  ];
-
-  directions.sort((left, right) => left.distance - right.distance);
-  return directions[0];
-}
-
-function getOffscreenExitTarget(x, y, vx, vy, width, height) {
-  const speed = Math.hypot(vx, vy);
-  let dirX = 0;
-  let dirY = 0;
-
-  if (speed > 0.01) {
-    dirX = vx / speed;
-    dirY = vy / speed;
-  } else {
-    const fallback = fallbackExitDirection(x, y, width, height);
-    dirX = fallback.x;
-    dirY = fallback.y;
-  }
-
-  const travelX =
-    dirX > 0
-      ? (width + OFFSCREEN_EXIT_PADDING - x) / dirX
-      : dirX < 0
-        ? (-OFFSCREEN_EXIT_PADDING - x) / dirX
-        : Number.POSITIVE_INFINITY;
-  const travelY =
-    dirY > 0
-      ? (height + OFFSCREEN_EXIT_PADDING - y) / dirY
-      : dirY < 0
-        ? (-OFFSCREEN_EXIT_PADDING - y) / dirY
-        : Number.POSITIVE_INFINITY;
-
-  const travel = [travelX, travelY]
-    .filter((distance) => Number.isFinite(distance) && distance > 0)
-    .reduce(
-      (smallest, distance) => Math.min(smallest, distance),
-      Number.POSITIVE_INFINITY,
-    );
-
-  const fallbackTravel =
-    Math.max(width, height) * 0.35 + OFFSCREEN_EXIT_PADDING;
-  const distance = Number.isFinite(travel) ? travel : fallbackTravel;
-
-  return {
-    x: x + (dirX * distance),
-    y: y + (dirY * distance),
-  };
 }
 
 function spriteIndexForCell(row, column) {
@@ -148,9 +89,9 @@ export default function MnistDigitGridBackground() {
     let frameId = 0;
 
     function buildGrid() {
-      const gap = state.width < 640 ? 30 : 36;
+      const gap = state.width < 640 ? MOBILE_GRID_GAP : DESKTOP_GRID_GAP;
       const margin = gap;
-      const baseSize = state.width < 640 ? 13 : 15;
+      const baseSize = state.width < 640 ? MOBILE_BASE_SIZE : DESKTOP_BASE_SIZE;
       const cells = [];
       let row = 0;
 
@@ -191,16 +132,7 @@ export default function MnistDigitGridBackground() {
       buildGrid();
     }
 
-    function handlePointerMove(event) {
-      if (isStaticZoneTarget(event.target)) {
-        state.pointer.lastX = event.clientX;
-        state.pointer.lastY = event.clientY;
-        state.pointer.lastTime = performance.now();
-        disengagePointer();
-        return;
-      }
-
-      const now = performance.now();
+    function updatePointerVelocity(event, now) {
       let nextVx = 0;
       let nextVy = 0;
 
@@ -214,10 +146,37 @@ export default function MnistDigitGridBackground() {
       } else {
         const dt = Math.max(16, now - (state.pointer.lastTime || now));
         nextVx =
-          ((event.clientX - state.pointer.lastX) / dt) * 18 || state.pointer.vx;
+          ((event.clientX - state.pointer.lastX) / dt) * 11 || state.pointer.vx;
         nextVy =
-          ((event.clientY - state.pointer.lastY) / dt) * 18 || state.pointer.vy;
+          ((event.clientY - state.pointer.lastY) / dt) * 11 || state.pointer.vy;
       }
+
+      return { nextVx, nextVy };
+    }
+
+    function handoffPointerToStaticZone(event) {
+      const now = performance.now();
+      const { nextVx, nextVy } = updatePointerVelocity(event, now);
+
+      state.pointer.targetX = event.clientX;
+      state.pointer.targetY = event.clientY;
+      state.pointer.targetVx = nextVx * 0.22;
+      state.pointer.targetVy = nextVy * 0.22;
+      state.pointer.lastX = event.clientX;
+      state.pointer.lastY = event.clientY;
+      state.pointer.lastTime = now;
+      state.pointer.targetEngagement = 0;
+      state.pointer.active = false;
+    }
+
+    function handlePointerMove(event) {
+      if (isStaticZoneTarget(event.target)) {
+        handoffPointerToStaticZone(event);
+        return;
+      }
+
+      const now = performance.now();
+      const { nextVx, nextVy } = updatePointerVelocity(event, now);
 
       state.pointer.targetX = event.clientX;
       state.pointer.targetY = event.clientY;
@@ -230,15 +189,6 @@ export default function MnistDigitGridBackground() {
       state.pointer.active = true;
     }
 
-    function disengagePointer() {
-      state.pointer.targetX = state.pointer.x;
-      state.pointer.targetY = state.pointer.y;
-      state.pointer.targetVx = 0;
-      state.pointer.targetVy = 0;
-      state.pointer.targetEngagement = 0;
-      state.pointer.active = false;
-    }
-
     function handleViewportExit() {
       if (
         state.pointer.lastX < -9000 &&
@@ -248,28 +198,24 @@ export default function MnistDigitGridBackground() {
         return;
       }
 
-      const originX = state.pointer.lastX > -9000 ? state.pointer.lastX : state.pointer.x;
-      const originY = state.pointer.lastY > -9000 ? state.pointer.lastY : state.pointer.y;
-      const exitTarget = getOffscreenExitTarget(
-        originX,
-        originY,
-        state.pointer.targetVx || state.pointer.vx,
-        state.pointer.targetVy || state.pointer.vy,
-        state.width,
-        state.height,
-      );
+      const now = performance.now();
+      const releaseX = state.pointer.lastX > -9000 ? state.pointer.lastX : state.pointer.x;
+      const releaseY = state.pointer.lastY > -9000 ? state.pointer.lastY : state.pointer.y;
 
-      state.pointer.targetX = exitTarget.x;
-      state.pointer.targetY = exitTarget.y;
+      state.pointer.targetX = releaseX;
+      state.pointer.targetY = releaseY;
       state.pointer.targetVx = 0;
       state.pointer.targetVy = 0;
+      state.pointer.lastX = releaseX;
+      state.pointer.lastY = releaseY;
+      state.pointer.lastTime = now;
       state.pointer.targetEngagement = 0;
       state.pointer.active = false;
     }
 
     function handlePointerBoundaryExit(event) {
       if (event.relatedTarget === null) {
-        handleViewportExit();
+        handleViewportExit(event);
       }
     }
 
@@ -278,15 +224,14 @@ export default function MnistDigitGridBackground() {
         return;
       }
 
-      const maxRadius = maxViewportRadius(
-        event.clientX,
-        event.clientY,
-        state.width,
-        state.height,
+      const localizedRadius = clamp(
+        Math.min(state.width, state.height) * SHOCK_RADIUS_VIEWPORT_FACTOR,
+        SHOCK_RADIUS_MIN,
+        SHOCK_RADIUS_MAX,
       );
       const duration = Math.max(
         SHOCK_MIN_DURATION_MS,
-        ((maxRadius + SHOCK_WIDTH) / SHOCK_SPEED) * 1000,
+        ((localizedRadius + SHOCK_WIDTH) / SHOCK_SPEED) * 1000,
       );
 
       state.shocks.push({
@@ -294,7 +239,7 @@ export default function MnistDigitGridBackground() {
         y: event.clientY,
         start: performance.now(),
         duration,
-        maxRadius,
+        maxRadius: localizedRadius,
       });
     }
 
@@ -314,9 +259,10 @@ export default function MnistDigitGridBackground() {
       state.lastFrameTime = now;
 
       // Smooth pointer state on the animation thread so glyph motion stays fluid.
-      const positionEase = 1 - Math.exp(-delta / 38);
-      const velocityEase = 1 - Math.exp(-delta / 62);
-      const engagementEase = 1 - Math.exp(-delta / 180);
+      const positionEase = 1 - Math.exp(-delta / 54);
+      const velocityEase = 1 - Math.exp(-delta / 94);
+      const engagementEase = 1 - Math.exp(-delta / 240);
+
       state.pointer.x += (state.pointer.targetX - state.pointer.x) * positionEase;
       state.pointer.y += (state.pointer.targetY - state.pointer.y) * positionEase;
       state.pointer.vx += (state.pointer.targetVx - state.pointer.vx) * velocityEase;
@@ -356,8 +302,8 @@ export default function MnistDigitGridBackground() {
         let shockInfluence = 0;
 
         if (hover > 0) {
-          offsetX += state.pointer.vx * hover * 1.15;
-          offsetY += state.pointer.vy * hover * 1.15;
+          offsetX += state.pointer.vx * hover * 0.72;
+          offsetY += state.pointer.vy * hover * 0.72;
         }
 
         for (const shock of state.shocks) {
@@ -386,8 +332,8 @@ export default function MnistDigitGridBackground() {
         }
 
         const emphasis = Math.max(hover, shockInfluence);
-        const drawSize = cell.baseSize * (1 + (hover * 0.9) + (shockInfluence * 0.65));
-        const alpha = 0.1 + (hover * 0.2) + (shockInfluence * 0.16);
+        const drawSize = cell.baseSize * (1 + (hover * 0.5) + (shockInfluence * 0.65));
+        const alpha = 0.1 + (hover * 0.12) + (shockInfluence * 0.16);
         context.globalAlpha = alpha;
         if (emphasis > 0.12) {
           context.shadowColor = `rgba(215, 106, 47, ${0.12 + (emphasis * 0.28)})`;

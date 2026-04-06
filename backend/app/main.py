@@ -14,6 +14,8 @@ from .mosaic import (
     DEFAULT_DATA_DIR,
     MosaicError,
     MosaicSettings,
+    compute_upscale,
+    describe_image_bytes,
     generate_mosaic_bytes,
     get_library,
     library_is_loaded,
@@ -52,6 +54,103 @@ JOB_EXECUTOR = ThreadPoolExecutor(
     max_workers=job_worker_count,
     thread_name_prefix="mnist-mosaic",
 )
+TRACE_STAGE_LIMIT = 24
+
+PIPELINE_STAGE_BLUEPRINTS = (
+    {
+        "id": "intake_upload",
+        "label": "Validate upload",
+        "detail": "Inspecting the uploaded payload envelope.",
+    },
+    {
+        "id": "sanitize_upload",
+        "label": "Sanitize upload",
+        "detail": "Normalizing the image and stripping metadata.",
+    },
+    {
+        "id": "queued",
+        "label": "Queued",
+        "detail": "Waiting for an available mosaic worker.",
+    },
+    {
+        "id": "boot_sequence",
+        "label": "Worker boot",
+        "detail": "Initializing the mosaic worker runtime.",
+    },
+    {
+        "id": "library_probe",
+        "label": "Check library",
+        "detail": "Checking whether the MNIST glyph cache is already warm.",
+    },
+    {
+        "id": "loading_library",
+        "label": "Read dataset",
+        "detail": "Streaming the raw MNIST glyph archive.",
+    },
+    {
+        "id": "expanding_library",
+        "label": "Invert glyphs",
+        "detail": "Generating inverse digit states for the matcher.",
+    },
+    {
+        "id": "binning_library",
+        "label": "Index buckets",
+        "detail": "Mapping brightness buckets for fast glyph lookup.",
+    },
+    {
+        "id": "library_ready",
+        "label": "Library ready",
+        "detail": "Glyph matcher locked and ready for assembly.",
+    },
+    {
+        "id": "decoding_frame",
+        "label": "Decode frame",
+        "detail": "Reading the uploaded portrait pixels.",
+    },
+    {
+        "id": "tonal_normalization",
+        "label": "Tone shaping",
+        "detail": "Applying CLAHE and gamma correction.",
+    },
+    {
+        "id": "lattice_lock",
+        "label": "Plan lattice",
+        "detail": "Projecting the tile field onto the portrait.",
+    },
+    {
+        "id": "glyph_matching",
+        "label": "Glyph match",
+        "detail": "Matching and assembling digit cells row by row.",
+    },
+    {
+        "id": "encoding_frame",
+        "label": "Encode PNG",
+        "detail": "Encoding the finished mosaic image.",
+    },
+    {
+        "id": "complete",
+        "label": "Complete",
+        "detail": "Preview and download are ready.",
+    },
+)
+PIPELINE_STAGE_BLUEPRINT_LOOKUP = {
+    stage["id"]: stage for stage in PIPELINE_STAGE_BLUEPRINTS
+}
+DEFAULT_PIPELINE_CONTEXT = {
+    "libraryCached": False,
+    "inputPixels": 1_600_000,
+    "tileSize": 13,
+    "resolvedUpscale": 2,
+    "totalTiles": 4_800,
+    "activeTiles": 3_456,
+    "outputPixels": 5_500_000,
+}
+MIN_LIBRARY_STAGE_WORK = 0.15
+TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+
+
+class MosaicCancelledError(RuntimeError):
+    pass
 
 app = FastAPI(title="MNIST Mosaic API", version="0.1.0")
 
@@ -95,10 +194,148 @@ def _prune_jobs() -> None:
         stale_job_ids = [
             job_id
             for job_id, job in JOBS.items()
-            if job["status"] in {"completed", "failed"} and float(job["updatedAt"]) < cutoff
+            if job["status"] in TERMINAL_JOB_STATUSES and float(job["updatedAt"]) < cutoff
         ]
         for job_id in stale_job_ids:
             JOBS.pop(job_id, None)
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_pipeline_context(**overrides: object) -> dict[str, object]:
+    context = dict(DEFAULT_PIPELINE_CONTEXT)
+    for key, value in overrides.items():
+        if value is not None:
+            context[key] = value
+
+    width = _safe_int(context.get("width"))
+    height = _safe_int(context.get("height"))
+    tile_size = max(1, _safe_int(context.get("tileSize"), 13))
+    total_tiles = _safe_int(context.get("totalTiles"))
+    input_pixels = _safe_int(context.get("inputPixels"))
+
+    if width > 0 and height > 0:
+        input_pixels = width * height
+        rows = max(1, height // tile_size)
+        cols = max(1, width // tile_size)
+        total_tiles = rows * cols
+        resolved_upscale = _safe_int(context.get("resolvedUpscale"))
+        if resolved_upscale <= 0:
+            explicit_upscale = _safe_int(context.get("upscale"))
+            resolved_upscale = explicit_upscale if explicit_upscale > 0 else compute_upscale(
+                width, height
+            )
+        output_width = cols * tile_size * resolved_upscale
+        output_height = rows * tile_size * resolved_upscale
+        context["inputPixels"] = input_pixels
+        context["totalTiles"] = total_tiles
+        context["resolvedUpscale"] = resolved_upscale
+        context["outputPixels"] = output_width * output_height
+
+    if input_pixels <= 0:
+        context["inputPixels"] = DEFAULT_PIPELINE_CONTEXT["inputPixels"]
+    if total_tiles <= 0:
+        context["totalTiles"] = DEFAULT_PIPELINE_CONTEXT["totalTiles"]
+    if _safe_int(context.get("outputPixels")) <= 0:
+        context["outputPixels"] = DEFAULT_PIPELINE_CONTEXT["outputPixels"]
+    if _safe_int(context.get("activeTiles")) <= 0:
+        context["activeTiles"] = max(
+            1,
+            int(round(_safe_int(context["totalTiles"]) * 0.72)),
+        )
+
+    context["libraryCached"] = bool(context.get("libraryCached"))
+    context["tileSize"] = tile_size
+    return context
+
+
+def _build_pipeline_stages(
+    planning_context: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
+    context = _build_pipeline_context(**(planning_context or {}))
+    input_pixels = _safe_int(context["inputPixels"])
+    total_tiles = _safe_int(context["totalTiles"])
+    active_tiles = _safe_int(context["activeTiles"])
+    output_pixels = _safe_int(context["outputPixels"])
+    library_cached = bool(context["libraryCached"])
+
+    work_by_stage = {
+        "intake_upload": 1.3,
+        "sanitize_upload": 2.6 + min(4.8, input_pixels / 650_000),
+        "queued": 0.6,
+        "boot_sequence": 0.9,
+        "library_probe": 0.4,
+        "loading_library": MIN_LIBRARY_STAGE_WORK if library_cached else 8.0,
+        "expanding_library": MIN_LIBRARY_STAGE_WORK if library_cached else 7.0,
+        "binning_library": MIN_LIBRARY_STAGE_WORK if library_cached else 9.0,
+        "library_ready": 1.0,
+        "decoding_frame": 1.4 + min(4.4, input_pixels / 550_000),
+        "tonal_normalization": 2.1 + min(6.8, input_pixels / 300_000),
+        "lattice_lock": 1.6 + min(6.2, total_tiles / 1_200),
+        "glyph_matching": 6.0 + (total_tiles * 0.004) + (active_tiles * 0.01),
+        "encoding_frame": 1.6 + min(7.4, output_pixels / 500_000),
+        "complete": 0.4,
+    }
+
+    total_work = sum(work_by_stage.values())
+    completed_work = 0.0
+    stages: list[dict[str, object]] = []
+
+    for blueprint in PIPELINE_STAGE_BLUEPRINTS:
+        stage_id = str(blueprint["id"])
+        stage_work = float(work_by_stage.get(stage_id, 1.0))
+        start_progress = 100.0 * (completed_work / total_work)
+        completed_work += stage_work
+        end_progress = 100.0 * (completed_work / total_work)
+        stages.append(
+            {
+                **blueprint,
+                "workUnits": round(stage_work, 3),
+                "startProgress": round(start_progress, 1),
+                "endProgress": round(100.0 if stage_id == "complete" else end_progress, 1),
+            }
+        )
+
+    return stages
+
+
+def _serialize_pipeline_stages(
+    pipeline_stages: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    return [dict(stage) for stage in (pipeline_stages or _build_pipeline_stages())]
+
+
+def _clamp_stage_progress(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _pipeline_progress(
+    pipeline_stages: list[dict[str, object]],
+    stage_id: str,
+    stage_progress: float | None = None,
+) -> float:
+    stage = next(
+        (candidate for candidate in pipeline_stages if candidate["id"] == stage_id),
+        None,
+    )
+    if stage is None:
+        return 0.0
+
+    start = float(stage["startProgress"])
+    end = float(stage["endProgress"])
+    if end <= start:
+        return end
+
+    progress_within_stage = 1.0 if stage_id == "complete" else 0.0
+    if stage_progress is not None:
+        progress_within_stage = _clamp_stage_progress(float(stage_progress))
+
+    return round(start + ((end - start) * progress_within_stage), 1)
 
 
 def _serialize_job(job: dict[str, object]) -> dict[str, object]:
@@ -112,8 +349,31 @@ def _serialize_job(job: dict[str, object]) -> dict[str, object]:
         "totalRows": job["totalRows"],
         "metadata": job["metadata"],
         "error": job["error"],
+        "trace": job["trace"],
+        "pipelineStages": _serialize_pipeline_stages(job.get("pipelineStages")),
         "createdAt": job["createdAt"],
         "updatedAt": job["updatedAt"],
+    }
+
+
+def _build_trace_entry(
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    progress: float,
+    completed_rows: int,
+    total_rows: int,
+    created_at: float,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "stage": stage,
+        "message": message,
+        "progress": progress,
+        "completedRows": completed_rows,
+        "totalRows": total_rows,
+        "createdAt": created_at,
     }
 
 
@@ -121,20 +381,36 @@ def _create_job(filename: str | None) -> dict[str, object]:
     _prune_jobs()
     now = time.time()
     job_id = uuid4().hex
+    planning_context = _build_pipeline_context(libraryCached=library_is_loaded())
+    pipeline_stages = _build_pipeline_stages(planning_context)
     job = {
         "id": job_id,
         "filename": filename,
-        "status": "queued",
-        "progress": 0.0,
-        "stage": "queued",
-        "message": "Job accepted",
+        "status": "running",
+        "progress": _pipeline_progress(pipeline_stages, "intake_upload", 0.0),
+        "stage": "intake_upload",
+        "message": "Inspecting upload envelope",
         "completedRows": 0,
         "totalRows": 0,
         "metadata": None,
         "error": None,
         "resultBytes": None,
+        "planningContext": planning_context,
+        "pipelineStages": pipeline_stages,
+        "cancelRequested": False,
         "createdAt": now,
         "updatedAt": now,
+        "trace": [
+            _build_trace_entry(
+                status="running",
+                stage="intake_upload",
+                message="Inspecting upload envelope",
+                progress=_pipeline_progress(pipeline_stages, "intake_upload", 0.0),
+                completed_rows=0,
+                total_rows=0,
+                created_at=now,
+            )
+        ],
     }
     with JOBS_LOCK:
         JOBS[job_id] = job
@@ -147,12 +423,61 @@ def _update_job(job_id: str, **changes: object) -> dict[str, object]:
         if job is None:
             raise KeyError(job_id)
 
+        current_status = str(job["status"])
+        incoming_status = str(changes.get("status", current_status))
+        if current_status in TERMINAL_JOB_STATUSES and incoming_status != current_status:
+            return dict(job)
+
+        current_stage = str(job["stage"])
+        current_message = str(job["message"])
+        current_progress = float(job["progress"])
+        current_completed_rows = int(job["completedRows"])
+        current_total_rows = int(job["totalRows"])
+
         if "progress" in changes:
             incoming_progress = float(changes["progress"])
             changes["progress"] = max(float(job["progress"]), incoming_progress)
 
         job.update(changes)
-        job["updatedAt"] = time.time()
+        now = time.time()
+        job["updatedAt"] = now
+
+        next_status = str(job["status"])
+        next_stage = str(job["stage"])
+        next_message = str(job["message"])
+        next_progress = float(job["progress"])
+        next_completed_rows = int(job["completedRows"])
+        next_total_rows = int(job["totalRows"])
+
+        trace = list(job.get("trace", []))
+        next_trace_entry = _build_trace_entry(
+            status=next_status,
+            stage=next_stage,
+            message=next_message,
+            progress=next_progress,
+            completed_rows=next_completed_rows,
+            total_rows=next_total_rows,
+            created_at=now,
+        )
+
+        should_append_trace = (
+            not trace
+            or current_stage != next_stage
+            or current_status != next_status
+        )
+        should_refresh_trace = (
+            current_message != next_message
+            or current_progress != next_progress
+            or current_completed_rows != next_completed_rows
+            or current_total_rows != next_total_rows
+        )
+
+        if should_append_trace:
+            trace.append(next_trace_entry)
+        elif should_refresh_trace:
+            trace[-1] = next_trace_entry
+
+        job["trace"] = trace[-TRACE_STAGE_LIMIT:]
         return dict(job)
 
 
@@ -164,12 +489,55 @@ def _get_job(job_id: str) -> dict[str, object]:
         return dict(job)
 
 
+def _raise_if_job_cancelled(job_id: str) -> None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise MosaicCancelledError("Mosaic job no longer exists.")
+        if bool(job.get("cancelRequested")) or str(job.get("status")) == "cancelled":
+            raise MosaicCancelledError("Mosaic generation cancelled by user.")
+
+
+def _extract_planning_updates(payload: dict[str, object]) -> dict[str, object]:
+    planning_updates: dict[str, object] = {}
+    for source_key, target_key in (
+        ("width", "width"),
+        ("height", "height"),
+        ("inputPixels", "inputPixels"),
+        ("totalTiles", "totalTiles"),
+        ("activeTiles", "activeTiles"),
+        ("outputPixels", "outputPixels"),
+        ("tileSize", "tileSize"),
+        ("resolvedUpscale", "resolvedUpscale"),
+    ):
+        if source_key in payload and payload[source_key] is not None:
+            planning_updates[target_key] = payload[source_key]
+    return planning_updates
+
+
 def _job_progress_callback(job_id: str, payload: dict[str, object]) -> None:
+    _raise_if_job_cancelled(job_id)
+    stage = str(payload.get("stage", "running"))
+    stage_progress = payload.get("stageProgress", payload.get("stage_progress"))
+    job = _get_job(job_id)
+    planning_context = dict(job.get("planningContext", {}))
+    planning_context.update(_extract_planning_updates(payload))
+
+    if stage in {"loading_library", "expanding_library", "binning_library"}:
+        planning_context["libraryCached"] = False
+
+    pipeline_stages = _build_pipeline_stages(planning_context)
     _update_job(
         job_id,
         status="running",
-        progress=payload.get("progress", 0.0),
-        stage=payload.get("stage", "running"),
+        planningContext=planning_context,
+        pipelineStages=pipeline_stages,
+        progress=_pipeline_progress(
+            pipeline_stages,
+            stage,
+            None if stage_progress is None else float(stage_progress),
+        ),
+        stage=stage,
         message=payload.get("message", "Processing"),
         completedRows=payload.get("completed_rows", payload.get("completedRows", 0)),
         totalRows=payload.get("total_rows", payload.get("totalRows", 0)),
@@ -197,24 +565,45 @@ def _build_mosaic_response(png_bytes: bytes, metadata: dict[str, object]) -> Res
 
 def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -> None:
     try:
+        _raise_if_job_cancelled(job_id)
+        job = _get_job(job_id)
+        planning_overrides = dict(job.get("planningContext", {}))
+        planning_overrides["libraryCached"] = library_is_loaded()
+        planning_context = _build_pipeline_context(**planning_overrides)
+        pipeline_stages = _build_pipeline_stages(planning_context)
         _update_job(
             job_id,
             status="running",
-            progress=1,
+            planningContext=planning_context,
+            pipelineStages=pipeline_stages,
+            progress=_pipeline_progress(pipeline_stages, "boot_sequence", 0.0),
             stage="boot_sequence",
-            message="Initializing mosaic pipeline",
+            message="Initializing mosaic worker",
+        )
+
+        _update_job(
+            job_id,
+            status="running",
+            planningContext=planning_context,
+            pipelineStages=pipeline_stages,
+            progress=_pipeline_progress(pipeline_stages, "library_probe", 0.0),
+            stage="library_probe",
+            message="Checking glyph library cache",
         )
 
         library = get_library(
             DEFAULT_DATA_DIR,
             lambda payload: _job_progress_callback(job_id, payload),
         )
+        _raise_if_job_cancelled(job_id)
         _update_job(
             job_id,
             status="running",
-            progress=22,
+            planningContext=planning_context,
+            pipelineStages=pipeline_stages,
+            progress=_pipeline_progress(pipeline_stages, "library_ready", 1.0),
             stage="library_ready",
-            message="Glyph library locked",
+            message="Glyph library ready",
         )
 
         png_bytes, metadata = generate_mosaic_bytes(
@@ -223,6 +612,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             settings,
             lambda payload: _job_progress_callback(job_id, payload),
         )
+        _raise_if_job_cancelled(job_id)
 
         _update_job(
             job_id,
@@ -234,6 +624,16 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             totalRows=metadata["rows"],
             metadata=metadata,
             resultBytes=png_bytes,
+        )
+    except MosaicCancelledError:
+        job = _get_job(job_id)
+        _update_job(
+            job_id,
+            status="cancelled",
+            stage=job["stage"],
+            message="Processing stopped by user",
+            error=None,
+            cancelRequested=True,
         )
     except MosaicError as exc:
         _update_job(
@@ -295,16 +695,84 @@ async def create_mosaic_job(
     contrast: float = Form(3.0),
     bg_thresh: int = Form(5),
 ) -> dict[str, object]:
-    image_bytes = await _read_upload_image(image)
-    settings = _parse_settings(tile_size, upscale, gamma, contrast, bg_thresh)
     job = _create_job(image.filename)
-    JOB_EXECUTOR.submit(_run_mosaic_job, str(job["id"]), image_bytes, settings)
-    return _serialize_job(job)
+    job_id = str(job["id"])
+    pipeline_stages = list(job["pipelineStages"])
+
+    try:
+        _update_job(
+            job_id,
+            status="running",
+            progress=_pipeline_progress(pipeline_stages, "intake_upload", 1.0),
+            stage="intake_upload",
+            message="Upload envelope validated",
+        )
+        _update_job(
+            job_id,
+            status="running",
+            progress=_pipeline_progress(pipeline_stages, "sanitize_upload", 0.0),
+            stage="sanitize_upload",
+            message="Sanitizing upload and stripping metadata",
+        )
+        image_bytes = await _read_upload_image(image)
+    except HTTPException as exc:
+        _update_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message="Upload rejected",
+            error=str(exc.detail),
+        )
+        raise
+
+    settings = _parse_settings(tile_size, upscale, gamma, contrast, bg_thresh)
+    image_details = describe_image_bytes(image_bytes)
+    planning_overrides = dict(_get_job(job_id).get("planningContext", {}))
+    planning_overrides.update(
+        {
+            "width": image_details["width"],
+            "height": image_details["height"],
+            "inputPixels": image_details["pixel_count"],
+            "tileSize": settings.tile_size,
+            "upscale": settings.upscale,
+            "libraryCached": library_is_loaded(),
+        }
+    )
+    planning_context = _build_pipeline_context(**planning_overrides)
+    pipeline_stages = _build_pipeline_stages(planning_context)
+    _update_job(
+        job_id,
+        status="queued",
+        planningContext=planning_context,
+        pipelineStages=pipeline_stages,
+        progress=_pipeline_progress(pipeline_stages, "queued", 0.0),
+        stage="queued",
+        message="Queued for worker pickup",
+    )
+    JOB_EXECUTOR.submit(_run_mosaic_job, job_id, image_bytes, settings)
+    return _serialize_job(_get_job(job_id))
 
 
 @app.get("/api/mosaic/jobs/{job_id}")
 async def get_mosaic_job(job_id: str) -> dict[str, object]:
     return _serialize_job(_get_job(job_id))
+
+
+@app.post("/api/mosaic/jobs/{job_id}/cancel")
+async def cancel_mosaic_job(job_id: str) -> dict[str, object]:
+    job = _get_job(job_id)
+    if job["status"] in TERMINAL_JOB_STATUSES:
+        return _serialize_job(job)
+
+    updated_job = _update_job(
+        job_id,
+        status="cancelled",
+        stage=job["stage"],
+        message="Processing stopped by user",
+        error=None,
+        cancelRequested=True,
+    )
+    return _serialize_job(updated_job)
 
 
 @app.get("/api/mosaic/jobs/{job_id}/image")

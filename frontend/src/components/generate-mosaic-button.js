@@ -94,6 +94,21 @@ export default function GenerateMosaicButton({
           repeat: busy && !prefersReducedMotion ? Infinity : 0,
         }}
       />
+      <motion.span
+        aria-hidden="true"
+        className="glass-cta-sheen"
+        animate={
+          !prefersReducedMotion && !busy && !disabled
+            ? { x: ["-165%", "180%"], opacity: [0, 0.86, 0] }
+            : { x: "0%", opacity: 0 }
+        }
+        transition={{
+          duration: 2.7,
+          ease: [0.22, 1, 0.36, 1],
+          repeat: !prefersReducedMotion && !busy && !disabled ? Infinity : 0,
+          repeatDelay: 1.8,
+        }}
+      />
       <span aria-hidden="true" className="glass-cta-rim-layer" />
 
       <AnimatePresence initial={false} mode="wait">

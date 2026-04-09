@@ -11,3 +11,6 @@ cp .env.example .env.local
 bun install
 bun run dev
 ```
+
+For Vercel, set the project Root Directory to `frontend` and add
+`NEXT_PUBLIC_API_URL=https://your-backend.onrender.com`.

@@ -39,8 +39,10 @@ the final PNG.
 mnist-art/
 ├── .gitignore
 ├── README.md
+├── render.yaml
 ├── backend/
 │   ├── .env.example
+│   ├── .python-version
 │   ├── app/
 │   │   ├── __init__.py
 │   │   ├── main.py
@@ -102,28 +104,41 @@ bun run dev
 
 Open `http://localhost:3000`.
 
-## Deploy to Vercel + Railway
+## Deploy to Vercel + Render
 
 This repo is already split for the recommended production setup:
 
 - deploy `frontend/` to Vercel
-- deploy `backend/` to Railway
+- deploy `backend/` to Render
 
 The frontend expects a separate backend origin via
 `NEXT_PUBLIC_API_URL`, and the backend keeps job state in memory for
 progress polling and row streaming, so running it as its own long-lived
 service is the safest fit.
 
-### 1. Deploy the backend to Railway
+### 1. Deploy the backend to Render
 
-1. Create a new Railway service from this Git repository.
-2. Set the service **Root Directory** to `/backend`.
-3. Set the Railway config file path to `/backend/railway.json`.
-4. Generate a public Railway domain for the service.
-5. Add these environment variables:
+1. Push this repo to GitHub, GitLab, or Bitbucket.
+2. In Render, create a new Blueprint from the repository, or create a Python
+   web service manually with the same settings from `render.yaml`.
+3. If you deploy manually, use these backend settings:
+
+   ```bash
+   Root Directory: backend
+   Build Command: pip install .
+   Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+   Health Check Path: /api/health
+   ```
+
+4. Set the required backend environment variable:
 
    ```bash
    CORS_ALLOW_ORIGINS=https://your-frontend.vercel.app
+   ```
+
+5. Keep these defaults unless you want to tune them:
+
+   ```bash
    MAX_UPLOAD_BYTES=20971520
    JOB_TTL_SECONDS=3600
    JOB_WORKERS=2
@@ -139,12 +154,19 @@ service is the safest fit.
 7. Deploy and verify the backend health endpoint:
 
    ```bash
-   https://your-backend.up.railway.app/api/health
+   https://your-backend.onrender.com/api/health
    ```
 
 Notes:
 
-- `backend/railway.json` sets the Railway start command and health check.
+- `render.yaml` stores the Render root directory, build command, start command,
+  health check, and non-secret defaults in version control.
+- `backend/.python-version` pins Render to Python `3.11`, which is a safer fit
+  for the current `numpy` and `opencv-python-headless` stack than Render's
+  newer default Python line.
+- `render.yaml` defaults to Render's `free` web-service plan so the first sync
+  does not silently create a paid instance. Upgrade the plan in Render if you
+  want fewer cold starts.
 - Keep the backend on a single replica for now. Job state and streamed row
   buffers are stored in process memory.
 - The first generation request after a cold deploy may take longer if the
@@ -154,16 +176,16 @@ Notes:
 
 1. Import the same Git repository into Vercel as a new project.
 2. Set the Vercel **Root Directory** to `frontend`.
-3. Add the frontend environment variable:
+3. Add the frontend environment variable in Vercel:
 
    ```bash
-   NEXT_PUBLIC_API_URL=https://your-backend.up.railway.app
+   NEXT_PUBLIC_API_URL=https://your-backend.onrender.com
    ```
 
 4. Deploy.
 
 Vercel will build the Next.js app from `frontend/`, and the browser app will
-send all mosaic requests to the Railway backend.
+send all mosaic requests to the Render backend.
 
 ## Environment variables
 

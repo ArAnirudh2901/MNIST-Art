@@ -52,6 +52,7 @@ mnist-art/
 │   │       └── raw/
 │   └── pyproject.toml
 └── frontend/
+    ├── .node-version
     ├── .env.example
     ├── package.json
     └── src/
@@ -125,7 +126,7 @@ service is the safest fit.
 
    ```bash
    Root Directory: backend
-   Build Command: pip install .
+   Build Command: pip install -r requirements.txt
    Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
    Health Check Path: /api/health
    ```
@@ -186,6 +187,14 @@ Notes:
 
 Vercel will build the Next.js app from `frontend/`, and the browser app will
 send all mosaic requests to the Render backend.
+
+Notes:
+
+- `frontend/package.json` pins Vercel to Node `20.x`, which satisfies the
+  minimum runtime requirement for Next.js `16`.
+- `frontend/.node-version` mirrors that runtime locally.
+- The frontend shows `warming up` while a sleeping Render instance spins back
+  up, which avoids treating the first cold-start probe as an immediate outage.
 
 ## Environment variables
 

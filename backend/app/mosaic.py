@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import base64
 import io
 import gzip
 import os
@@ -37,7 +38,7 @@ MNIST_FILES = {
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "MNIST" / "raw"
 ProgressCallback = Callable[[dict[str, int | float | str]], None]
 PreviewCallback = Callable[[bytes, int, int], None]
-RowCallback = Callable[[dict[str, int | str]], None]
+RowCallback = Callable[[int, int, int, int, str], None]
 
 
 class MosaicError(ValueError):

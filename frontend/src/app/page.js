@@ -16,8 +16,10 @@ const UPSCALE_MIN = 1;
 const UPSCALE_MAX = 5;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_LABEL = "20 MB";
-const HEALTH_CHECK_INTERVAL_MS = 2500;
-const HEALTH_CHECK_TIMEOUT_MS = 1800;
+const HEALTH_CHECK_INTERVAL_MS = 30_000;
+const HEALTH_CHECK_TIMEOUT_MS = 2_500;
+const HEALTH_CHECK_COLD_START_TIMEOUT_MS = 65_000;
+const HEALTH_CHECK_WARMING_HINT_DELAY_MS = 1_500;
 
 const defaultOptions = {
   tileSize: 13,
@@ -572,6 +574,7 @@ export default function Home() {
   const [displayedProgressState, setDisplayedProgressState] = useState(null);
   const canvasRef = useRef(null);
   const [hasCanvasContent, setHasCanvasContent] = useState(false);
+  const apiStatusRef = useRef("checking");
 
   const scrollOutputIntoView = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -599,6 +602,11 @@ export default function Home() {
       toast.dismiss(jobToastIdRef.current);
       jobToastIdRef.current = null;
     }
+  }
+
+  function updateApiStatus(nextStatus) {
+    apiStatusRef.current = nextStatus;
+    setApiStatus(nextStatus);
   }
 
   function resetGeneratedState() {
@@ -685,11 +693,34 @@ export default function Home() {
     let pollTimeoutId = null;
     let activeRequest = null;
 
+    function scheduleNextHealthCheck(delay = HEALTH_CHECK_INTERVAL_MS) {
+      if (cancelled || document.visibilityState === "hidden") {
+        return;
+      }
+
+      pollTimeoutId = window.setTimeout(() => {
+        checkHealth();
+      }, delay);
+    }
+
     async function checkHealth() {
       const controller = new AbortController();
+      const isColdStartProbe = apiStatusRef.current !== "online";
+      const requestTimeoutMs = isColdStartProbe
+        ? HEALTH_CHECK_COLD_START_TIMEOUT_MS
+        : HEALTH_CHECK_TIMEOUT_MS;
+      let didTimeout = false;
       const requestTimeoutId = window.setTimeout(() => {
+        didTimeout = true;
         controller.abort();
-      }, HEALTH_CHECK_TIMEOUT_MS);
+      }, requestTimeoutMs);
+      const warmingHintTimeoutId = isColdStartProbe
+        ? window.setTimeout(() => {
+          if (!cancelled && apiStatusRef.current !== "online") {
+            updateApiStatus("waking");
+          }
+        }, HEALTH_CHECK_WARMING_HINT_DELAY_MS)
+        : null;
 
       activeRequest = controller;
 
@@ -703,21 +734,25 @@ export default function Home() {
         }
 
         if (!cancelled) {
-          setApiStatus("online");
+          updateApiStatus("online");
         }
       } catch {
+        if (controller.signal.aborted && !didTimeout) {
+          return;
+        }
+
         if (!cancelled) {
-          setApiStatus("offline");
+          updateApiStatus("offline");
         }
       } finally {
         window.clearTimeout(requestTimeoutId);
+        if (warmingHintTimeoutId) {
+          window.clearTimeout(warmingHintTimeoutId);
+        }
 
         if (activeRequest === controller) {
           activeRequest = null;
-        }
-
-        if (!cancelled) {
-          pollTimeoutId = window.setTimeout(checkHealth, HEALTH_CHECK_INTERVAL_MS);
+          scheduleNextHealthCheck();
         }
       }
     }
@@ -742,6 +777,16 @@ export default function Home() {
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
         refreshHealthNow();
+        return;
+      }
+
+      if (pollTimeoutId) {
+        window.clearTimeout(pollTimeoutId);
+        pollTimeoutId = null;
+      }
+
+      if (activeRequest) {
+        activeRequest.abort();
       }
     }
 
@@ -771,18 +816,18 @@ export default function Home() {
 
     if (apiStatus === "offline" && !hasShownOfflineToastRef.current) {
       toast.error("Mosaic service unavailable", {
-        description: "The mosaic engine is temporarily offline. Please try again in a moment.",
+        description: "The mosaic engine did not respond. If Render is waking up, give it a moment and try again.",
       });
       hasShownOfflineToastRef.current = true;
     }
 
-    if (apiStatus === "online" && previousApiStatus === "offline") {
+    if (apiStatus === "online" && ["offline", "waking"].includes(previousApiStatus)) {
       toast.success("Mosaic service restored", {
-        description: "The mosaic engine is back online and ready again.",
+        description: "The mosaic engine is back online and ready to render again.",
       });
     }
 
-    if (apiStatus === "online" || apiStatus === "checking") {
+    if (["online", "checking", "waking"].includes(apiStatus)) {
       hasShownOfflineToastRef.current = false;
     }
 
@@ -1336,6 +1381,7 @@ export default function Home() {
       },
     ]
     : [];
+  const apiStatusLabel = apiStatus === "waking" ? "warming up" : apiStatus;
 
   return (
     <main className="relative h-screen overflow-hidden bg-white px-4 py-4 text-stone-900 sm:px-6 lg:px-8">
@@ -1349,12 +1395,14 @@ export default function Home() {
           <span
             className={`micro-badge-enter micro-status-badge rounded-full px-3 py-1 text-xs font-medium backdrop-blur-md ${apiStatus === "online"
               ? "border border-emerald-200/70 bg-emerald-100/70 text-emerald-800"
+              : apiStatus === "waking"
+                ? "border border-amber-200/70 bg-amber-100/70 text-amber-800"
               : apiStatus === "offline"
                 ? "border border-rose-200/70 bg-rose-100/70 text-rose-800"
                 : "border border-stone-200/70 bg-stone-100/70 text-stone-700"
               }`}
           >
-            Backend {apiStatus}
+            Backend {apiStatusLabel}
           </span>
           <h1 className="micro-heading-enter w-full text-[1.35rem] font-medium leading-tight tracking-[-0.04em] text-stone-800 sm:text-[1.6rem] lg:text-[1.85rem]">
             Turn a portrait into a photomosaic made entirely of handwritten digits.

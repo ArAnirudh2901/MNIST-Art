@@ -1,0 +1,7 @@
+# Runtime dependencies for Render-style installs.
+# Keep this file aligned with backend/pyproject.toml.
+fastapi>=0.135.3
+numpy>=2.2.0
+opencv-python-headless>=4.10.0.84
+python-multipart>=0.0.22
+uvicorn[standard]>=0.42.0

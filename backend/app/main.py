@@ -49,6 +49,7 @@ allowed_origins = [
     for origin in os.getenv("CORS_ALLOW_ORIGINS", ",".join(DEFAULT_ORIGINS)).split(",")
     if origin.strip()
 ]
+allowed_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or None
 max_upload_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 job_ttl_seconds = int(os.getenv("JOB_TTL_SECONDS", "3600"))
 job_worker_count = int(os.getenv("JOB_WORKERS", "2"))
@@ -165,6 +166,7 @@ app = FastAPI(title="MNIST Mosaic API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

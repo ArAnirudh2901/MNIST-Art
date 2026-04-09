@@ -102,6 +102,69 @@ bun run dev
 
 Open `http://localhost:3000`.
 
+## Deploy to Vercel + Railway
+
+This repo is already split for the recommended production setup:
+
+- deploy `frontend/` to Vercel
+- deploy `backend/` to Railway
+
+The frontend expects a separate backend origin via
+`NEXT_PUBLIC_API_URL`, and the backend keeps job state in memory for
+progress polling and row streaming, so running it as its own long-lived
+service is the safest fit.
+
+### 1. Deploy the backend to Railway
+
+1. Create a new Railway service from this Git repository.
+2. Set the service **Root Directory** to `/backend`.
+3. Set the Railway config file path to `/backend/railway.json`.
+4. Generate a public Railway domain for the service.
+5. Add these environment variables:
+
+   ```bash
+   CORS_ALLOW_ORIGINS=https://your-frontend.vercel.app
+   MAX_UPLOAD_BYTES=20971520
+   JOB_TTL_SECONDS=3600
+   JOB_WORKERS=2
+   MNIST_AUTO_DOWNLOAD=1
+   ```
+
+6. Optional: allow Vercel preview deployments too:
+
+   ```bash
+   CORS_ALLOW_ORIGIN_REGEX=https://.*\.vercel\.app
+   ```
+
+7. Deploy and verify the backend health endpoint:
+
+   ```bash
+   https://your-backend.up.railway.app/api/health
+   ```
+
+Notes:
+
+- `backend/railway.json` sets the Railway start command and health check.
+- Keep the backend on a single replica for now. Job state and streamed row
+  buffers are stored in process memory.
+- The first generation request after a cold deploy may take longer if the
+  backend needs to auto-download or warm the MNIST tile library.
+
+### 2. Deploy the frontend to Vercel
+
+1. Import the same Git repository into Vercel as a new project.
+2. Set the Vercel **Root Directory** to `frontend`.
+3. Add the frontend environment variable:
+
+   ```bash
+   NEXT_PUBLIC_API_URL=https://your-backend.up.railway.app
+   ```
+
+4. Deploy.
+
+Vercel will build the Next.js app from `frontend/`, and the browser app will
+send all mosaic requests to the Railway backend.
+
 ## Environment variables
 
 ### Frontend
@@ -115,6 +178,7 @@ Open `http://localhost:3000`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed frontend origins |
+| `CORS_ALLOW_ORIGIN_REGEX` | unset | Optional regex-based CORS allowlist, useful for Vercel preview domains |
 | `MAX_UPLOAD_BYTES` | `20971520` | Maximum upload size in bytes (`20 MB`) |
 | `JOB_TTL_SECONDS` | `3600` | How long completed or failed jobs remain available |
 | `JOB_WORKERS` | `2` | Number of background worker threads for mosaic jobs |

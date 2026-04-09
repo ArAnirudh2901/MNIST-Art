@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .mosaic import (
     DEFAULT_DATA_DIR,
@@ -37,6 +40,8 @@ EXPOSED_HEADERS = [
     "X-Mosaic-Render-Size",
     "X-Mosaic-Total-Tiles",
     "X-Mosaic-Pixel-Count",
+    "X-Preview-Rows",
+    "X-Preview-Total-Rows",
 ]
 
 allowed_origins = [
@@ -49,6 +54,9 @@ job_ttl_seconds = int(os.getenv("JOB_TTL_SECONDS", "3600"))
 job_worker_count = int(os.getenv("JOB_WORKERS", "2"))
 
 JOBS: dict[str, dict[str, object]] = {}
+PREVIEW_CACHE: dict[str, tuple[bytes, int, int]] = {}
+ROW_BUFFERS: dict[str, list[dict[str, object]]] = {}
+ROW_EVENTS: dict[str, Event] = {}
 JOBS_LOCK = Lock()
 JOB_EXECUTOR = ThreadPoolExecutor(
     max_workers=job_worker_count,
@@ -198,6 +206,7 @@ def _prune_jobs() -> None:
         ]
         for job_id in stale_job_ids:
             JOBS.pop(job_id, None)
+            PREVIEW_CACHE.pop(job_id, None)
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -563,7 +572,25 @@ def _build_mosaic_response(png_bytes: bytes, metadata: dict[str, object]) -> Res
     )
 
 
+def _row_callback_for_job(job_id: str):
+    """Return a row callback that pushes row data into the per-job row buffer."""
+    def _on_row(row_entry: dict[str, int | str]) -> None:
+        with JOBS_LOCK:
+            buf = ROW_BUFFERS.get(job_id)
+            if buf is not None:
+                buf.append(row_entry)
+        event = ROW_EVENTS.get(job_id)
+        if event is not None:
+            event.set()
+    return _on_row
+
+
 def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -> None:
+    # Initialize the row buffer before processing begins.
+    with JOBS_LOCK:
+        ROW_BUFFERS[job_id] = []
+    ROW_EVENTS[job_id] = Event()
+
     try:
         _raise_if_job_cancelled(job_id)
         job = _get_job(job_id)
@@ -611,6 +638,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             library,
             settings,
             lambda payload: _job_progress_callback(job_id, payload),
+            row_callback=_row_callback_for_job(job_id),
         )
         _raise_if_job_cancelled(job_id)
 
@@ -625,6 +653,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             metadata=metadata,
             resultBytes=png_bytes,
         )
+        PREVIEW_CACHE.pop(job_id, None)
     except MosaicCancelledError:
         job = _get_job(job_id)
         _update_job(
@@ -635,6 +664,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             error=None,
             cancelRequested=True,
         )
+        PREVIEW_CACHE.pop(job_id, None)
     except MosaicError as exc:
         _update_job(
             job_id,
@@ -643,6 +673,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             message="Mosaic generation failed",
             error=str(exc),
         )
+        PREVIEW_CACHE.pop(job_id, None)
     except Exception:
         _update_job(
             job_id,
@@ -651,6 +682,12 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             message="Unexpected backend error",
             error="Unexpected backend error during mosaic generation.",
         )
+        PREVIEW_CACHE.pop(job_id, None)
+    finally:
+        # Signal stream consumers that the job is done.
+        event = ROW_EVENTS.get(job_id)
+        if event is not None:
+            event.set()
 
 
 def _parse_settings(
@@ -784,6 +821,80 @@ async def get_mosaic_job_image(job_id: str) -> Response:
     return _build_mosaic_response(
         png_bytes=job["resultBytes"],
         metadata=job["metadata"],
+    )
+
+
+@app.get("/api/mosaic/jobs/{job_id}/stream")
+async def stream_mosaic_rows(job_id: str) -> StreamingResponse:
+    """SSE endpoint that streams row pixel data as the mosaic is generated."""
+    # Verify the job exists.
+    _get_job(job_id)
+
+    async def _event_generator():
+        cursor = 0
+        while True:
+            # Check if there are buffered rows to send.
+            with JOBS_LOCK:
+                buf = ROW_BUFFERS.get(job_id, [])
+                pending = buf[cursor:]
+
+            for row_entry in pending:
+                yield f"data: {json.dumps(row_entry, separators=(',', ':'))}\n\n"
+                cursor += 1
+
+            # Check if the job has reached a terminal state.
+            job = _get_job(job_id)
+            status = str(job.get("status", ""))
+            if status in TERMINAL_JOB_STATUSES:
+                # Drain any final rows.
+                with JOBS_LOCK:
+                    buf = ROW_BUFFERS.get(job_id, [])
+                    final_pending = buf[cursor:]
+                for row_entry in final_pending:
+                    yield f"data: {json.dumps(row_entry, separators=(',', ':'))}\n\n"
+                yield f"data: {json.dumps({'done': True, 'status': status})}\n\n"
+                # Clean up the row buffer for this job.
+                with JOBS_LOCK:
+                    ROW_BUFFERS.pop(job_id, None)
+                ROW_EVENTS.pop(job_id, None)
+                return
+
+            # Wait for new rows or a short timeout.
+            event = ROW_EVENTS.get(job_id)
+            if event is not None:
+                event.clear()
+                # Use asyncio sleep to avoid blocking the event loop,
+                # with a short poll interval.
+                await asyncio.sleep(0.05)
+            else:
+                await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/mosaic/jobs/{job_id}/preview")
+async def get_mosaic_job_preview(job_id: str) -> Response:
+    cached = PREVIEW_CACHE.get(job_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="No preview available yet.")
+
+    jpeg_bytes, done_rows, total_rows = cached
+    return Response(
+        content=jpeg_bytes,
+        media_type="image/jpeg",
+        headers={
+            "X-Preview-Rows": str(done_rows),
+            "X-Preview-Total-Rows": str(total_rows),
+            "Cache-Control": "no-store",
+        },
     )
 
 

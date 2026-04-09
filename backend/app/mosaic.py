@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import gzip
 import os
 import struct
@@ -34,6 +36,8 @@ MNIST_FILES = {
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "MNIST" / "raw"
 ProgressCallback = Callable[[dict[str, int | float | str]], None]
+PreviewCallback = Callable[[bytes, int, int], None]
+RowCallback = Callable[[dict[str, int | str]], None]
 
 
 class MosaicError(ValueError):
@@ -323,11 +327,34 @@ def describe_image_bytes(image_bytes: bytes) -> dict[str, int]:
     }
 
 
+def _encode_row_strip(
+    canvas: np.ndarray,
+    row_index: int,
+    render_size: int,
+    output_width: int,
+) -> dict[str, int | str]:
+    """Serialize one fully rendered mosaic row for the live SSE preview."""
+    y_start = row_index * render_size
+    y_end = y_start + render_size
+    row_strip = np.ascontiguousarray(canvas[y_start:y_end, :output_width])
+
+    return {
+        "rowIndex": row_index,
+        "offsetY": y_start,
+        "rowHeight": render_size,
+        "width": output_width,
+        "height": int(canvas.shape[0]),
+        "pixels": base64.b64encode(row_strip.tobytes()).decode("ascii"),
+    }
+
+
 def generate_mosaic_bytes(
     image_bytes: bytes,
     library: MNISTLibrary,
     settings: MosaicSettings,
     progress_callback: ProgressCallback | None = None,
+    preview_callback: PreviewCallback | None = None,
+    row_callback: RowCallback | None = None,
 ) -> tuple[bytes, dict[str, int | float]]:
     _validate_settings(settings)
     if library.images is None:
@@ -406,6 +433,10 @@ def generate_mosaic_bytes(
     # to avoid flooding the poll endpoint while still looking smooth.
     emit_interval = max(1, total_tiles // 80)
 
+    # Preview: generate a JPEG snapshot every N rows.
+    preview_row_interval = 5
+    last_preview_row = -preview_row_interval  # force first preview early
+
     def _current_fraction() -> float:
         work_done = (scanned_patches * scan_weight) + (patches_done * match_weight)
         return min(1.0, work_done / match_total_work)
@@ -473,6 +504,17 @@ def generate_mosaic_bytes(
                     completed_rows=row + 1,
                     total_rows=rows,
                 )
+
+        # After finishing each row, generate a preview snapshot every N rows.
+        if preview_callback is not None and (row - last_preview_row) >= preview_row_interval:
+            jpeg_bytes = b""  # Legacy preview path (kept for compatibility)
+            if jpeg_bytes:
+                preview_callback(jpeg_bytes, row + 1, rows)
+            last_preview_row = row
+
+        # Emit raw row pixel data for SSE canvas streaming.
+        if row_callback is not None:
+            row_callback(_encode_row_strip(canvas, row, render_size, output_width))
 
     _emit_progress(progress_callback, 96, "encoding_frame", "Encoding output mosaic")
     encoded, png = cv2.imencode(".png", canvas)

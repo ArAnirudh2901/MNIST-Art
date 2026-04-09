@@ -20,6 +20,7 @@ export default function GenerateMosaicButton({
   busy = false,
   disabled = false,
   className = "",
+  onClick,
 }) {
   const prefersReducedMotion = useReducedMotion();
   const pointerX = useMotionValue(50);
@@ -57,9 +58,10 @@ export default function GenerateMosaicButton({
 
   return (
     <motion.button
-      type="submit"
+      type={onClick ? "button" : "submit"}
       disabled={disabled}
       aria-busy={busy}
+      onClick={onClick}
       onPointerMove={handlePointerMove}
       onPointerLeave={resetPointer}
       whileHover={
@@ -153,24 +155,25 @@ export default function GenerateMosaicButton({
             </>
           ) : (
             <>
-              <span>Generate mosaic</span>
-              <motion.span
-                aria-hidden="true"
-                className="glass-cta-arrow"
-                animate={
-                  prefersReducedMotion
-                    ? { x: 0 }
-                    : { x: [0, 1.5, 0] }
-                }
-                transition={{
-                  duration: 1.9,
-                  ease: "easeInOut",
-                  repeat: Infinity,
-                  repeatDelay: 0.3,
-                }}
-              >
-                →
-              </motion.span>
+              <span className="glass-cta-label">Generate mosaic</span>
+              <span aria-hidden="true" className="glass-cta-arrow-slot">
+                <motion.span
+                  className="glass-cta-arrow"
+                  animate={
+                    prefersReducedMotion
+                      ? { x: 0 }
+                      : { x: [0, 1.5, 0] }
+                  }
+                  transition={{
+                    duration: 1.9,
+                    ease: "easeInOut",
+                    repeat: Infinity,
+                    repeatDelay: 0.3,
+                  }}
+                >
+                  →
+                </motion.span>
+              </span>
             </>
           )}
         </motion.span>

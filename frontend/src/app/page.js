@@ -29,38 +29,43 @@ const defaultOptions = {
 
 const upscaleOptions = ["auto", 1, 2, 3, 4, 5];
 
-const controlGroups = [
+const presets = [
+  { id: "quick", label: "Quick", tileSize: 20, gamma: 0.8, contrast: 2, bgThresh: 8 },
+  { id: "balanced", label: "Balanced", tileSize: 13, gamma: 0.8, contrast: 3, bgThresh: 5 },
+  { id: "detailed", label: "Detailed", tileSize: 6, gamma: 0.7, contrast: 4.5, bgThresh: 3 },
+];
+
+const structureControls = [
   {
     id: "tileSize",
     label: "Tile size",
-    description: "Smaller tiles add detail but take longer to render.",
     min: 4,
     max: 24,
     step: 1,
   },
   {
+    id: "bgThresh",
+    label: "Bg threshold",
+    min: 0,
+    max: 40,
+    step: 1,
+  },
+];
+
+const toneControls = [
+  {
     id: "gamma",
     label: "Gamma",
-    description: "Brightens or darkens the midtones of the portrait.",
     min: 0.3,
     max: 1.8,
     step: 0.1,
   },
   {
     id: "contrast",
-    label: "CLAHE contrast",
-    description: "Boosts local contrast before the digit matching step.",
+    label: "CLAHE",
     min: 0.5,
     max: 8,
     step: 0.5,
-  },
-  {
-    id: "bgThresh",
-    label: "Background threshold",
-    description: "Skips the darkest regions so the background stays open.",
-    min: 0,
-    max: 40,
-    step: 1,
   },
 ];
 
@@ -205,6 +210,17 @@ function formatFileSize(bytes) {
   }
 
   return `${formatDecimal(value)} ${units[unitIndex]}`;
+}
+
+function decodeBase64Image(base64Value) {
+  const binary = window.atob(base64Value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }
 
 function computeAutoUpscale(width, height) {
@@ -390,27 +406,27 @@ function buildCurrentPipelineState(jobState, pipelineStages) {
       currentStatus === "cancelled"
         ? "cancelled"
         : currentStatus === "failed"
-        ? "failed"
-        : currentStatus === "completed" || currentStage === "complete"
-          ? "complete"
-          : "active",
+          ? "failed"
+          : currentStatus === "completed" || currentStage === "complete"
+            ? "complete"
+            : "active",
     message: traceEntry?.message || stage.detail,
     detail:
       currentStatus === "cancelled"
         ? traceEntry?.message || "Processing stopped by user"
         : stage.id === "glyph_matching" && totalRows > 0
-        ? `${formatNumber(completedRows)} / ${formatNumber(totalRows)} rows`
-        : stage.detail,
+          ? `${formatNumber(completedRows)} / ${formatNumber(totalRows)} rows`
+          : stage.detail,
     meta:
       currentStatus === "cancelled"
         ? "Stopped"
         : currentStatus === "failed"
-        ? "Failed"
-        : currentStatus === "completed" || currentStage === "complete"
-          ? "Done"
-          : typeof traceEntry?.progress === "number"
-            ? `${Math.round(traceEntry.progress)}%`
-            : "Pending",
+          ? "Failed"
+          : currentStatus === "completed" || currentStage === "complete"
+            ? "Done"
+            : typeof traceEntry?.progress === "number"
+              ? `${Math.round(traceEntry.progress)}%`
+              : "Pending",
   };
 }
 
@@ -491,42 +507,42 @@ function buildSourceTelemetry(sourceMeta, options) {
     options.upscale === "auto"
       ? computeAutoUpscale(sourceMeta.width, sourceMeta.height)
       : options.upscale;
-  const projectedWidth = cols * options.tileSize * effectiveUpscale;
-  const projectedHeight = rows * options.tileSize * effectiveUpscale;
   const mimeLabel = sourceMeta.mimeType
     ? sourceMeta.mimeType.replace("image/", "").toUpperCase()
     : "IMAGE";
 
   return [
     {
-      label: "Capture matrix",
+      label: "Dimensions",
       value: `${formatNumber(sourceMeta.width)} × ${formatNumber(sourceMeta.height)}`,
-      detail: `${formatDecimal(sourceMeta.pixelCount / 1_000_000)} megapixels`,
     },
     {
-      label: "Frame bias",
+      label: "Megapixels",
+      value: formatDecimal(sourceMeta.pixelCount / 1_000_000),
+    },
+    {
+      label: "Aspect",
       value: getOrientationLabel(sourceMeta.width, sourceMeta.height),
-      detail: `${formatDecimal(sourceMeta.width / sourceMeta.height)} : 1 aspect vector`,
     },
     {
-      label: "Payload signature",
-      value: `${mimeLabel} stream`,
-      detail: `${formatFileSize(sourceMeta.fileSize)} upload envelope`,
+      label: "Format",
+      value: mimeLabel,
     },
     {
-      label: "Lattice forecast",
+      label: "File size",
+      value: formatFileSize(sourceMeta.fileSize),
+    },
+    {
+      label: "Tile size",
+      value: `${options.tileSize}px`,
+    },
+    {
+      label: "Grid",
       value: `${formatNumber(cols)} × ${formatNumber(rows)}`,
-      detail: `${formatCompactNumber(totalTiles)} candidate cells`,
     },
     {
-      label: "Projection field",
-      value: `${effectiveUpscale}x ${options.upscale === "auto" ? "auto" : "manual"}`,
-      detail: `${formatNumber(projectedWidth)} × ${formatNumber(projectedHeight)} target raster`,
-    },
-    {
-      label: "Control stack",
-      value: `gamma ${options.gamma}`,
-      detail: `CLAHE ${options.contrast} / gate ${options.bgThresh}`,
+      label: "Total cells",
+      value: formatCompactNumber(totalTiles),
     },
   ];
 }
@@ -554,6 +570,8 @@ export default function Home() {
   const previousApiStatusRef = useRef("checking");
   const pendingCancellationRef = useRef(false);
   const [displayedProgressState, setDisplayedProgressState] = useState(null);
+  const canvasRef = useRef(null);
+  const [hasCanvasContent, setHasCanvasContent] = useState(false);
 
   const scrollOutputIntoView = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -599,6 +617,18 @@ export default function Home() {
 
     setResultUrl("");
     setResultMeta(null);
+    setHasCanvasContent(false);
+
+    // Clear the canvas.
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 
   async function requestJobCancellation(jobId) {
@@ -815,6 +845,91 @@ export default function Home() {
     };
   }, [sourceUrl, file]);
 
+  // ── SSE row stream: draw rows onto canvas ──
+  useEffect(() => {
+    if (!activeJobId) {
+      return undefined;
+    }
+
+    let eventSource = null;
+    let isCancelled = false;
+    let sseStarted = false;
+
+    function startSSE() {
+      if (sseStarted) return;
+      sseStarted = true;
+      eventSource = new EventSource(`${API_URL}/api/mosaic/jobs/${activeJobId}/stream`);
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.done) {
+          eventSource.close();
+          eventSource = null;
+          return;
+        }
+
+        const { width, height, offsetY, rowHeight, pixels } = data;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        const rowPixels = decodeBase64Image(pixels);
+        if (rowPixels.length !== width * rowHeight) {
+          return;
+        }
+        const imageData = ctx.createImageData(width, rowHeight);
+        const rgbaPixels = imageData.data;
+
+        if (isCancelled) {
+          return;
+        }
+
+        for (let sourceIndex = 0; sourceIndex < rowPixels.length; sourceIndex += 1) {
+          const value = rowPixels[sourceIndex];
+          const targetIndex = sourceIndex * 4;
+          rgbaPixels[targetIndex + 0] = value;
+          rgbaPixels[targetIndex + 1] = value;
+          rgbaPixels[targetIndex + 2] = value;
+          rgbaPixels[targetIndex + 3] = 255;
+        }
+
+        ctx.putImageData(imageData, 0, offsetY);
+
+        if (!hasCanvasContent) {
+          setHasCanvasContent(true);
+        }
+      };
+
+      eventSource.onerror = () => {
+        // SSE errors are non-fatal — the job poller handles state.
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+      };
+    }
+
+    startSSE();
+
+    return () => {
+      isCancelled = true;
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobId]);
+
+  // ── Job status poller ──
   useEffect(() => {
     if (!activeJobId) {
       return undefined;
@@ -840,6 +955,11 @@ export default function Home() {
         startTransition(() => {
           setJobState(job);
         });
+
+        // When glyph_matching starts, kick off the SSE stream if not already.
+        // We do this by checking a ref — the SSE effect above runs once per activeJobId.
+        // But we need to "start" it lazily since the stream has no data until matching begins.
+        // The SSE effect is already connected, so rows just flow when available.
 
         if (job.status === "completed" && job.metadata) {
           const imageResponse = await fetch(`${API_URL}/api/mosaic/jobs/${activeJobId}/image`, {
@@ -882,11 +1002,13 @@ export default function Home() {
           jobToastIdRef.current = null;
           setIsGenerating(false);
           setActiveJobId("");
+          setHasCanvasContent(false);
           return;
         }
 
         if (job.status === "cancelled") {
           applyCancelledJobState(job);
+          setHasCanvasContent(false);
           return;
         }
 
@@ -898,6 +1020,7 @@ export default function Home() {
           jobToastIdRef.current = null;
           setIsGenerating(false);
           setActiveJobId("");
+          setHasCanvasContent(false);
           return;
         }
 
@@ -965,7 +1088,7 @@ export default function Home() {
   }
 
   async function handleSubmit(event) {
-    event.preventDefault();
+    if (event?.preventDefault) event.preventDefault();
     if (!file) {
       toast.error("No portrait image selected", {
         description: "Choose a portrait image before generating the mosaic.",
@@ -1180,335 +1303,156 @@ export default function Home() {
   const telemetryCards = hasTelemetry
     ? [
       {
-        label: "Output matrix",
+        label: "Output",
         value: `${formatNumber(resultMeta.width)} × ${formatNumber(resultMeta.height)}`,
-        detail: `${formatDecimal(resultMeta.pixelCount / 1_000_000)} megapixels`,
       },
       {
-        label: "Tile lattice",
+        label: "Megapixels",
+        value: formatDecimal(resultMeta.pixelCount / 1_000_000),
+      },
+      {
+        label: "Grid",
         value: `${formatNumber(resultMeta.cols)} × ${formatNumber(resultMeta.rows)}`,
-        detail: `${formatCompactNumber(resultMeta.totalTiles)} digit cells`,
       },
       {
-        label: "Scale vector",
-        value: `${resultMeta.upscale}x render`,
-        detail: `${resultMeta.tileSize}px source -> ${resultMeta.renderSize}px output`,
+        label: "Tiles",
+        value: formatCompactNumber(resultMeta.totalTiles),
       },
       {
-        label: "Tone profile",
-        value: `gamma ${resultMeta.gamma}`,
-        detail: `CLAHE ${resultMeta.contrast}`,
+        label: "Scale",
+        value: `${resultMeta.upscale}x`,
       },
       {
-        label: "Void threshold",
-        value: `gate ${resultMeta.bgThresh}`,
-        detail: "background suppression active",
+        label: "Render tile",
+        value: `${resultMeta.tileSize}→${resultMeta.renderSize}px`,
       },
       {
-        label: "Library span",
-        value: "140K glyph states",
-        detail: "MNIST originals + inversions",
+        label: "Gamma",
+        value: `${resultMeta.gamma}`,
+      },
+      {
+        label: "CLAHE",
+        value: `${resultMeta.contrast}`,
       },
     ]
     : [];
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-white px-5 py-8 text-stone-900 sm:px-8 lg:px-10">
+    <main className="relative h-screen overflow-hidden bg-white px-4 py-4 text-stone-900 sm:px-6 lg:px-8">
       <MnistDigitGridBackground />
-      <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col gap-4 pb-5 pt-2">
-        <section className="mx-auto flex w-full max-w-6xl flex-col items-center gap-4 text-center">
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            <span className="micro-badge-enter rounded-full border border-black/8 bg-black px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-white">
-              MNIST Mosaic Studio
-            </span>
-            <span
-              className={`micro-badge-enter micro-status-badge rounded-full px-3 py-1 text-xs font-medium backdrop-blur-md ${apiStatus === "online"
-                ? "border border-emerald-200/70 bg-emerald-100/70 text-emerald-800"
-                : apiStatus === "offline"
-                  ? "border border-rose-200/70 bg-rose-100/70 text-rose-800"
-                  : "border border-stone-200/70 bg-stone-100/70 text-stone-700"
-                }`}
-            >
-              Backend {apiStatus}
-            </span>
-          </div>
-
-          <div className="max-w-5xl">
-            <h2 className="micro-heading-enter text-[2rem] font-medium leading-[0.98] tracking-[-0.045em] text-stone-800 sm:text-[3rem] lg:text-[3.7rem] xl:text-[4rem]">
-              Turn a portrait into a photomosaic made entirely of handwritten digits.
-            </h2>
-          </div>
-
-          <LiquidGlassPanel
-            as="form"
-            onSubmit={handleSubmit}
-            data-background-static-zone
-            className="liquid-glass-panel micro-panel-enter relative w-full max-w-6xl overflow-hidden rounded-[42px] px-5 py-5 text-left text-stone-950 sm:px-6 sm:py-6"
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-[1600px] flex-col gap-3">
+        {/* ── Hero bar ── */}
+        <section className="flex flex-shrink-0 flex-wrap items-center justify-center gap-3 text-center">
+          <span className="micro-badge-enter rounded-full border border-black/8 bg-black px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-white">
+            MNIST Mosaic Studio
+          </span>
+          <span
+            className={`micro-badge-enter micro-status-badge rounded-full px-3 py-1 text-xs font-medium backdrop-blur-md ${apiStatus === "online"
+              ? "border border-emerald-200/70 bg-emerald-100/70 text-emerald-800"
+              : apiStatus === "offline"
+                ? "border border-rose-200/70 bg-rose-100/70 text-rose-800"
+                : "border border-stone-200/70 bg-stone-100/70 text-stone-700"
+              }`}
           >
-            <div className="relative grid gap-4 lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)] lg:items-start">
-              <div className="flex flex-col gap-3.5">
-                <div className="glass-block glass-control-block glass-slider-block micro-card-reveal px-4.5 py-3.5 text-left">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-stone-500">
-                    Upload Interface
-                  </p>
-                  <h2 className="mt-1 text-[0.98rem] font-semibold tracking-[-0.02em] text-stone-950 sm:text-[1.02rem]">
-                    Upload your source portrait
-                  </h2>
-                  <p className="mt-1 max-w-[15rem] text-[0.82rem] leading-5 text-stone-600">
-                    Drop in a clean portrait, tune the render field, and let the digit
-                    engine synthesize the mosaic.
-                  </p>
-                </div>
-
-                <div className="glass-block glass-block-strong micro-card-reveal p-3" style={{ "--micro-delay": "90ms" }}>
-                  <div className="micro-interactive-surface flex min-h-[210px] flex-col justify-between gap-4 p-4.5 transition">
-                    <span className="text-base font-semibold tracking-[-0.03em] text-stone-950">
-                      Choose a portrait image
-                    </span>
-                    <span className="block max-w-sm text-[0.9rem] leading-5 text-stone-600">
-                      JPG, PNG, or WebP up to {MAX_UPLOAD_LABEL}. Metadata is stripped
-                      automatically before the mosaic pipeline starts.
-                    </span>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
-                    <div className="upload-control-stack grid w-full justify-items-start gap-2.5">
-                      <div className="upload-selection-row grid w-full items-center gap-2.5 md:grid-cols-[auto_minmax(0,1fr)]">
-                        <button
-                          type="button"
-                          onClick={openImagePicker}
-                          className="glass-value-pill glass-upload-chip micro-pill inline-flex w-fit max-w-full items-center px-4.5 py-2.5 text-sm font-semibold text-stone-900"
-                        >
-                          Select image
-                        </button>
-                        <div
-                          className={`glass-value-pill micro-pill upload-file-pill inline-flex min-w-0 w-full items-center px-4.5 py-2.5 text-sm font-semibold text-stone-800 ${file ? "is-filled" : "is-empty"}`}
-                          title={file?.name || "No image selected"}
-                        >
-                          <span className="block min-w-0 flex-1 truncate">
-                            {file ? file.name : "No image selected"}
-                          </span>
-                          {file ? (
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                clearSelectedImage();
-                              }}
-                              className="upload-file-remove inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-base font-semibold leading-none"
-                              aria-label="Remove selected image"
-                              title="Remove image"
-                            >
-                              x
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  className="micro-card-reveal flex justify-center"
-                  style={{ "--micro-delay": "150ms" }}
-                >
-                  <GenerateMosaicButton
-                    disabled={isGenerating}
-                    busy={isGenerating}
-                    className="h-10 px-5 text-[0.92rem] font-semibold tracking-[-0.03em] text-stone-950 transition disabled:cursor-not-allowed disabled:opacity-70 sm:min-w-[12.25rem]"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3.5">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {controlGroups.map((control, index) => (
-                    <label
-                      key={control.id}
-                      className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-4.5 py-3.5"
-                      style={{ "--micro-delay": `${120 + (index * 55)}ms` }}
-                    >
-                      <div className="grid grid-cols-[minmax(0,1fr)_3.75rem] items-start gap-3">
-                        <div className="min-w-0">
-                          <p className="text-[0.92rem] font-semibold tracking-[-0.02em] text-stone-900">
-                            {control.label}
-                          </p>
-                          <p className="mt-1 max-w-[15rem] text-[0.82rem] leading-5 text-stone-600">
-                            {control.description}
-                          </p>
-                        </div>
-                        <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[3.75rem] items-center justify-center px-3 py-1 text-sm font-semibold text-stone-900 [font-variant-numeric:tabular-nums]">
-                          {options[control.id]}
-                        </span>
-                      </div>
-                      <GlassSlider
-                        id={control.id}
-                        min={control.min}
-                        max={control.max}
-                        step={control.step}
-                        value={options[control.id]}
-                        onChange={(event) =>
-                          updateOption(
-                            control.id,
-                            control.step < 1
-                              ? Number(event.target.value)
-                              : parseInt(event.target.value, 10),
-                          )
-                        }
-                        className="mt-3"
-                      />
-                    </label>
-                  ))}
-
-                  <label
-                    className="glass-block glass-control-block glass-upscale-block micro-card-reveal micro-interactive-surface px-4.5 py-3.5 sm:col-span-2"
-                    style={{ "--micro-delay": "330ms" }}
-                  >
-                    <div className="flex items-end justify-between gap-4">
-                      <div>
-                        <p className="text-[0.92rem] font-semibold tracking-[-0.02em] text-stone-900">
-                          Upscale
-                        </p>
-                        <p className="mt-1 text-[0.82rem] leading-5 text-stone-600">
-                          Auto uses the source resolution to target a high-resolution export.
-                        </p>
-                      </div>
-                    </div>
-                    <div
-                      className="glass-segmented-control mt-3 grid grid-cols-3 gap-1.5 p-1.5 sm:grid-cols-6"
-                      style={{
-                        "--segment-index-mobile-col": activeUpscaleIndex % 3,
-                        "--segment-index-mobile-row": Math.floor(activeUpscaleIndex / 3),
-                        "--segment-index-desktop": activeUpscaleIndex,
-                      }}
-                    >
-                      {upscaleOptions.map((value) => {
-                        const active = options.upscale === value;
-                        return (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => updateOption("upscale", value)}
-                            className={`glass-segment micro-choice px-3 py-2 text-sm font-semibold [font-variant-numeric:tabular-nums] transition ${active
-                              ? "glass-segment-active text-stone-950"
-                              : "text-stone-600"
-                              }`}
-                          >
-                            {value === "auto" ? "Auto" : `${value}x`}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </label>
-                </div>
-
-              </div>
-            </div>
-          </LiquidGlassPanel>
+            Backend {apiStatus}
+          </span>
+          <h1 className="micro-heading-enter w-full text-[1.35rem] font-medium leading-tight tracking-[-0.04em] text-stone-800 sm:text-[1.6rem] lg:text-[1.85rem]">
+            Turn a portrait into a photomosaic made entirely of handwritten digits.
+          </h1>
         </section>
 
+        {/* ── Main content: previews left, controls right ── */}
         <section
           ref={outputSectionRef}
-          className="grid scroll-mt-6 gap-6 lg:grid-cols-2"
+          className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_280px] xl:grid-cols-[1fr_300px]"
         >
-          <motion.article
-            data-background-static-zone
-            whileHover={
-              prefersReducedMotion ? undefined : { y: -4, scale: 1.002 }
-            }
-            transition={{ type: "spring", stiffness: 260, damping: 24, mass: 0.72 }}
-            className="premium-display-card micro-card-reveal overflow-hidden rounded-[28px] border border-white/28 bg-white/[0.03] shadow-[0_14px_36px_rgba(42,32,19,0.03)]"
-            style={{ "--micro-delay": "420ms" }}
-          >
-            <div className="border-b border-white/20 px-5 py-4 sm:px-6">
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-stone-500">
-                Source
-              </p>
-              <h2 className="mt-1 text-xl font-semibold text-stone-950">
-                Portrait preview
-              </h2>
-            </div>
-            <div className="p-5 sm:p-6">
-              <motion.div
-                whileHover={
-                  prefersReducedMotion ? undefined : { scale: 1.004 }
-                }
-                transition={{ type: "spring", stiffness: 280, damping: 24, mass: 0.7 }}
-                className="premium-preview-frame micro-preview-frame relative flex aspect-[4/5] items-center justify-center overflow-hidden rounded-[22px] border border-white/20 bg-white/[0.02]"
-              >
-                {sourceUrl ? (
-                  <InspectableImage
-                    src={sourceUrl}
-                    alt="Uploaded portrait preview"
-                    title="Source portrait preview"
-                    hint="Open the uploaded portrait in a larger preview before generation."
-                    previewLabel="Click to preview"
-                  />
-                ) : (
-                  <div className="premium-empty-state px-6 text-center">
-                    <span className="premium-empty-chip">Source feed idle</span>
-                    <p className="mt-4 max-w-sm text-sm leading-7 text-stone-600">
-                      Upload a portrait to preview the input before the MNIST matching starts.
-                    </p>
-                  </div>
-                )}
-              </motion.div>
-
+          {/* ── LEFT: Both previews side by side ── */}
+          <div className="grid min-h-0 gap-4 sm:grid-cols-2">
+            {/* Source preview */}
+            <motion.article
+              data-background-static-zone
+              whileHover={
+                prefersReducedMotion ? undefined : { y: -3, scale: 1.002 }
+              }
+              transition={{ type: "spring", stiffness: 260, damping: 24, mass: 0.72 }}
+              className="premium-display-card micro-card-reveal flex min-h-0 flex-col overflow-y-auto overflow-x-hidden rounded-[22px] border border-white/28 bg-white/[0.03] shadow-[0_14px_36px_rgba(42,32,19,0.03)]"
+              style={{ "--micro-delay": "200ms" }}
+            >
+              <div className="flex-shrink-0 border-b border-white/20 px-4 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-stone-500">
+                  Source
+                </p>
+                <h2 className="text-sm font-semibold text-stone-950">
+                  Portrait preview
+                </h2>
+              </div>
+              <div className="relative min-h-0 flex-1 p-3">
+                <motion.div
+                  whileHover={
+                    prefersReducedMotion ? undefined : { scale: 1.004 }
+                  }
+                  transition={{ type: "spring", stiffness: 280, damping: 24, mass: 0.7 }}
+                  className="premium-preview-frame micro-preview-frame relative flex h-full items-center justify-center overflow-hidden rounded-[16px] border border-white/20 bg-white/[0.02]"
+                >
+                  {sourceUrl ? (
+                    <InspectableImage
+                      src={sourceUrl}
+                      alt="Uploaded portrait preview"
+                      title="Source portrait preview"
+                      hint="Open the uploaded portrait in a larger preview before generation."
+                      previewLabel="Click to preview"
+                    />
+                  ) : (
+                    <div className="premium-empty-state px-4 text-center">
+                      <span className="premium-empty-chip">Source feed idle</span>
+                      <p className="mt-2 max-w-[12rem] text-xs leading-5 text-stone-500">
+                        Upload a portrait to preview.
+                      </p>
+                    </div>
+                  )}
+                </motion.div>
+              </div>
               {hasSourceTelemetry ? (
-                <div className="mt-5 space-y-3">
-                  <div className="telemetry-section-header gap-3">
-                    <p className="telemetry-section-kicker text-sm font-semibold uppercase tracking-[0.22em] text-stone-500">
-                      Source Telemetry
-                    </p>
-                    <p className="telemetry-section-meta text-xs font-medium text-stone-500">
-                      Live from the uploaded frame
-                    </p>
-                  </div>
-                  <div className="telemetry-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="flex-shrink-0 border-t border-white/15 px-5 py-4 text-center">
+                  <h3 className="mb-3 text-[0.7rem] font-bold uppercase tracking-[0.15em] text-stone-900/40">
+                    Source Details
+                  </h3>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-2">
                     {sourceTelemetry.map((card, index) => (
                       <div
                         key={card.label}
-                        className="micro-telemetry-card telemetry-card micro-card-reveal rounded-3xl border border-white/20 bg-white/[0.03] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
+                        className="micro-card-reveal flex flex-col items-center gap-0.5"
                         style={{ "--micro-delay": `${480 + (index * 55)}ms` }}
                       >
-                        <p className="telemetry-card-label text-sm font-medium uppercase tracking-[0.18em] text-stone-500">
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-stone-400">
                           {card.label}
-                        </p>
-                        <p className="telemetry-card-value mt-2 text-xl font-semibold tracking-[-0.03em] text-stone-950">
+                        </span>
+                        <span className="text-sm font-semibold tracking-[-0.01em] text-stone-800">
                           {card.value}
-                        </p>
-                        <p className="telemetry-card-detail mt-2 text-sm leading-6 text-stone-600">
-                          {card.detail}
-                        </p>
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
               ) : null}
-            </div>
-          </motion.article>
+            </motion.article>
 
-          <motion.article
-            data-background-static-zone
-            whileHover={
-              prefersReducedMotion ? undefined : { y: -4, scale: 1.002 }
-            }
-            transition={{ type: "spring", stiffness: 260, damping: 24, mass: 0.72 }}
-            className="premium-display-card micro-card-reveal overflow-hidden rounded-[28px] border border-white/28 bg-white/[0.03] shadow-[0_14px_36px_rgba(42,32,19,0.03)]"
-            style={{ "--micro-delay": "500ms" }}
-          >
-            <div className="border-b border-white/20 px-5 py-4 sm:px-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+            {/* Result preview */}
+            <motion.article
+              data-background-static-zone
+              whileHover={
+                prefersReducedMotion ? undefined : { y: -3, scale: 1.002 }
+              }
+              transition={{ type: "spring", stiffness: 260, damping: 24, mass: 0.72 }}
+              className="premium-display-card micro-card-reveal flex min-h-0 flex-col overflow-y-auto overflow-x-hidden rounded-[22px] border border-white/28 bg-white/[0.03] shadow-[0_14px_36px_rgba(42,32,19,0.03)]"
+              style={{ "--micro-delay": "280ms" }}
+            >
+              <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-white/20 px-4 py-2.5">
                 <div>
-                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-stone-500">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-stone-500">
                     Result
                   </p>
-                  <h2 className="mt-1 text-xl font-semibold text-stone-950">
+                  <h2 className="text-sm font-semibold text-stone-950">
                     Generated mosaic
                   </h2>
                 </div>
@@ -1518,132 +1462,337 @@ export default function Home() {
                     download="mnist-mosaic.png"
                     aria-label="Download PNG"
                     title="Download PNG"
-                    className="glass-value-pill glass-upload-remove micro-download-chip inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-semibold text-stone-900"
+                    className="glass-value-pill micro-download-chip inline-flex items-center justify-center rounded-full px-3 py-1.5 text-xs font-semibold text-stone-900"
                   >
-                    Download
+                    ↓ Download
                   </a>
                 ) : null}
               </div>
-            </div>
-
-            <div className="space-y-5 p-5 sm:p-6">
-              <motion.div
-                whileHover={
-                  prefersReducedMotion ? undefined : { scale: 1.004 }
-                }
-                transition={{ type: "spring", stiffness: 280, damping: 24, mass: 0.7 }}
-                className={`premium-preview-frame micro-preview-frame relative flex aspect-[4/5] items-center justify-center overflow-hidden rounded-[22px] border border-white/20 bg-white/[0.02] ${isGenerating ? "is-generating" : ""}`}
-              >
-                {resultUrl ? (
-                  <InspectableImage
-                    src={resultUrl}
-                    alt="MNIST photomosaic output"
-                    title="Generated MNIST mosaic"
-                    hint="Open the generated mosaic in a larger preview."
-                    previewLabel="Click to preview"
-                  />
-                ) : isGenerating ? (
-                  <AnimatePresence initial={false}>
-                    <motion.div
-                      initial={{ opacity: 0, y: 10, scale: 0.985 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.985 }}
-                      transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-                      className="pipeline-overlay px-6 py-6 sm:px-8"
-                    >
-                      <span className="pipeline-overlay-chip">Fabrication progress</span>
-                      <div className="pipeline-overlay-header">
-                        <p className="pipeline-overlay-percent">{progressDisplay.progressValue}%</p>
-                        <p className="pipeline-overlay-stage">{progressDisplay.label}</p>
-                      </div>
-                      <p className="pipeline-overlay-message">{progressDisplay.message}</p>
-                      <p className="pipeline-overlay-detail">{progressDisplay.detail}</p>
-
-                      <div className="pipeline-progress-block">
-                        <div className="micro-progress-shell pipeline-progress-shell h-3 overflow-hidden rounded-full bg-black/[0.08] shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)]">
-                          <div
-                            className="micro-progress-fill pipeline-progress-fill h-full rounded-full transition-[width] duration-500 ease-out"
-                            style={{ width: `${progressDisplay.progressValue}%` }}
-                          />
-                        </div>
-                        <div className="pipeline-progress-copy">
-                          <p className="pipeline-progress-primary">{progressCopy.primary}</p>
-                          <p className="pipeline-progress-secondary">{progressCopy.secondary}</p>
-                        </div>
-                      </div>
-
-                      <div className="pipeline-overlay-actions">
-                        <button
-                          type="button"
-                          onClick={handleCancelProcessing}
-                          disabled={isCancelling}
-                          className="glass-value-pill pipeline-stop-button inline-flex items-center justify-center px-4 py-2.5 text-sm font-semibold text-stone-900 disabled:cursor-not-allowed disabled:opacity-65"
-                        >
-                          {isCancelling ? "Stopping..." : "Stop processing"}
-                        </button>
-                      </div>
-
-                      <div className="pipeline-stage-grid">
-                        {pipelineStageStates.map((stage) => (
-                          <div
-                            key={stage.id}
-                            className={`pipeline-stage-chip is-${stage.state}`}
-                          >
-                            <div className="pipeline-stage-chip-head">
-                              <span className="pipeline-stage-chip-dot" />
-                              <span className="pipeline-stage-chip-label">{stage.label}</span>
-                            </div>
-                            <span className="pipeline-stage-chip-meta">{stage.meta}</span>
+              <div className="relative min-h-0 flex-1 p-3">
+                <motion.div
+                  whileHover={
+                    prefersReducedMotion ? undefined : { scale: 1.004 }
+                  }
+                  transition={{ type: "spring", stiffness: 280, damping: 24, mass: 0.7 }}
+                  className={`premium-preview-frame micro-preview-frame relative flex h-full items-center justify-center overflow-hidden rounded-[16px] border border-white/20 bg-white/[0.02] ${isGenerating ? "is-generating" : ""}`}
+                >
+                  {resultUrl ? (
+                    <div className="result-image-reveal flex h-full w-full items-center justify-center">
+                      <InspectableImage
+                        src={resultUrl}
+                        alt="MNIST photomosaic output"
+                        title="Generated MNIST mosaic"
+                        hint="Open the generated mosaic in a larger preview."
+                        previewLabel="Click to preview"
+                      />
+                    </div>
+                  ) : isGenerating ? (
+                    <>
+                      <canvas
+                        ref={canvasRef}
+                        className="live-preview-canvas"
+                      />
+                      {!hasCanvasContent && (
+                        <div className="live-preview-overlay absolute inset-0 z-10 flex items-center justify-center">
+                          <div className="premium-empty-state px-4 text-center">
+                            <span className="premium-empty-chip">Fabricating…</span>
+                            <p className="mt-2 max-w-[12rem] text-xs leading-5 text-stone-500">
+                              Mosaic preview will appear shortly.
+                            </p>
                           </div>
-                        ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="premium-empty-state px-4 text-center">
+                      <span className="premium-empty-chip">
+                        Output standby
+                      </span>
+                      <p className="mt-2 max-w-[12rem] text-xs leading-5 text-stone-500">
+                        Mosaic will appear here after generation.
+                      </p>
+                    </div>
+                  )}
+                </motion.div>
+              </div>
+              {isGenerating ? (
+                <div className="fabrication-bottom-bar flex-shrink-0 border-t border-white/15 px-5 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex min-w-[3.2rem] flex-col gap-0.5">
+                      <span className="text-[0.56rem] font-bold uppercase tracking-[0.14em] text-stone-500/70">
+                        Fabricating
+                      </span>
+                      <span className="text-[0.82rem] font-bold text-stone-900/90 [font-variant-numeric:tabular-nums]">
+                        {progressDisplay.progressValue}%
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="micro-progress-shell h-2 overflow-hidden rounded-full bg-black/[0.07] shadow-[inset_0_1px_2px_rgba(0,0,0,0.06)]">
+                        <div
+                          className="micro-progress-fill h-full rounded-full transition-[width] duration-500 ease-out"
+                          style={{ width: `${progressDisplay.progressValue}%` }}
+                        />
                       </div>
-                    </motion.div>
-                  </AnimatePresence>
-                ) : (
-                  <div className="premium-empty-state px-6 text-center">
-                    <span className="premium-empty-chip">
-                      Output buffer standby
-                    </span>
-                    <p className="mt-4 max-w-sm text-sm leading-7 text-stone-600">
-                      Your finished mosaic will appear here as soon as the backend returns the rendered PNG.
-                    </p>
+                      <div className="mt-1 flex justify-between">
+                        <span className="text-[0.62rem] font-semibold text-stone-600/80">{progressCopy.primary}</span>
+                        <span className="text-[0.56rem] font-bold uppercase tracking-[0.12em] text-stone-400/70">{progressDisplay.label}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCancelProcessing}
+                      disabled={isCancelling}
+                      className="glass-value-pill live-preview-stop-btn flex-shrink-0"
+                    >
+                      {isCancelling ? "Stopping…" : "Stop"}
+                    </button>
                   </div>
-                )}
-              </motion.div>
-
-              {hasTelemetry ? (
-                <div className="space-y-3">
-                  <div className="telemetry-section-header gap-3">
-                    <p className="telemetry-section-kicker text-sm font-semibold uppercase tracking-[0.22em] text-stone-500">
-                      Mosaic Telemetry
-                    </p>
-                    <p className="telemetry-section-meta text-xs font-medium text-stone-500">
-                      Generated from live backend metadata
-                    </p>
-                  </div>
-                  <div className="telemetry-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                </div>
+              ) : hasTelemetry ? (
+                <div className="flex-shrink-0 border-t border-white/15 px-5 py-4 text-center">
+                  <h3 className="mb-3 text-[0.7rem] font-bold uppercase tracking-[0.15em] text-stone-900/40">
+                    Render Telemetry
+                  </h3>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-2">
                     {telemetryCards.map((card, index) => (
                       <div
                         key={card.label}
-                        className="micro-telemetry-card telemetry-card micro-card-reveal rounded-3xl border border-white/20 bg-white/[0.03] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
+                        className="micro-card-reveal flex flex-col items-center gap-0.5"
                         style={{ "--micro-delay": `${560 + (index * 55)}ms` }}
                       >
-                        <p className="telemetry-card-label text-sm font-medium uppercase tracking-[0.18em] text-stone-500">
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-stone-400">
                           {card.label}
-                        </p>
-                        <p className="telemetry-card-value mt-2 text-xl font-semibold tracking-[-0.03em] text-stone-950">
+                        </span>
+                        <span className="text-sm font-semibold tracking-[-0.01em] text-stone-800">
                           {card.value}
-                        </p>
-                        <p className="telemetry-card-detail mt-2 text-sm leading-6 text-stone-600">
-                          {card.detail}
-                        </p>
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
               ) : null}
+            </motion.article>
+          </div>
+
+          {/* ── RIGHT: Compact controls sidebar ── */}
+          <LiquidGlassPanel
+            as="form"
+            onSubmit={handleSubmit}
+            data-background-static-zone
+            className="liquid-glass-panel micro-panel-enter relative flex w-full flex-col overflow-y-auto overflow-x-hidden rounded-[22px] px-3 py-3 text-left text-stone-950 lg:sticky lg:top-4"
+            style={{ maxHeight: "calc(100vh - 6rem)" }}
+          >
+            <div className="flex flex-col gap-1.5">
+              {/* Upload section — compact */}
+              <div className="glass-block glass-block-strong micro-card-reveal p-2" style={{ "--micro-delay": "90ms" }}>
+                <div className="micro-interactive-surface flex flex-col gap-1.5 p-2 transition">
+                  <span className="text-[0.8rem] font-semibold tracking-[-0.02em] text-stone-950">
+                    Source portrait
+                  </span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={openImagePicker}
+                      className="glass-value-pill glass-upload-chip micro-pill inline-flex shrink-0 items-center px-3 py-1.5 text-xs font-semibold text-stone-900"
+                    >
+                      Select image
+                    </button>
+                    <div
+                      className={`glass-value-pill micro-pill upload-file-pill inline-flex min-w-0 flex-1 items-center px-2.5 py-1.5 text-xs font-medium text-stone-700 ${file ? "is-filled" : "is-empty"}`}
+                      title={file?.name || "No image selected"}
+                    >
+                      <span className="block min-w-0 flex-1 truncate">
+                        {file ? file.name : "None"}
+                      </span>
+                      {file ? (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            clearSelectedImage();
+                          }}
+                          className="upload-file-remove ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-semibold leading-none"
+                          aria-label="Remove"
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mx-2 border-t border-stone-200/40" />
+
+              {/* Presets row */}
+              <div
+                className="glass-block glass-block-strong micro-card-reveal px-3 py-2"
+                style={{ "--micro-delay": "100ms" }}
+              >
+                <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                  Preset
+                </p>
+                <div className="flex gap-1.5">
+                  {presets.map((preset) => {
+                    const isActive =
+                      options.tileSize === preset.tileSize &&
+                      options.gamma === preset.gamma &&
+                      options.contrast === preset.contrast &&
+                      options.bgThresh === preset.bgThresh;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() =>
+                          setOptions((prev) => ({
+                            ...prev,
+                            tileSize: preset.tileSize,
+                            gamma: preset.gamma,
+                            contrast: preset.contrast,
+                            bgThresh: preset.bgThresh,
+                          }))
+                        }
+                        className={`glass-preset-btn flex-1 py-1 text-[0.72rem] font-semibold transition ${isActive ? "is-active" : "text-stone-600"
+                          }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Structure group: Tile size + Bg threshold */}
+              <div
+                className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
+                style={{ "--micro-delay": "140ms" }}
+              >
+                <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                  Structure
+                </p>
+                {structureControls.map((control) => (
+                  <label key={control.id} className="block">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
+                        {control.label}
+                      </p>
+                      <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
+                        {options[control.id]}
+                      </span>
+                    </div>
+                    <GlassSlider
+                      id={control.id}
+                      min={control.min}
+                      max={control.max}
+                      step={control.step}
+                      value={options[control.id]}
+                      onChange={(event) =>
+                        updateOption(
+                          control.id,
+                          control.step < 1
+                            ? Number(event.target.value)
+                            : parseInt(event.target.value, 10),
+                        )
+                      }
+                      className="mt-1 mb-1"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              {/* Tone group: Gamma + CLAHE */}
+              <div
+                className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
+                style={{ "--micro-delay": "180ms" }}
+              >
+                <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                  Tone mapping
+                </p>
+                {toneControls.map((control) => (
+                  <label key={control.id} className="block">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
+                        {control.label}
+                      </p>
+                      <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
+                        {options[control.id]}
+                      </span>
+                    </div>
+                    <GlassSlider
+                      id={control.id}
+                      min={control.min}
+                      max={control.max}
+                      step={control.step}
+                      value={options[control.id]}
+                      onChange={(event) =>
+                        updateOption(
+                          control.id,
+                          control.step < 1
+                            ? Number(event.target.value)
+                            : parseInt(event.target.value, 10),
+                        )
+                      }
+                      className="mt-1 mb-1"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              {/* Upscale */}
+              <div
+                className="glass-block glass-upscale-block micro-card-reveal micro-interactive-surface px-3 py-2"
+                style={{ "--micro-delay": "220ms" }}
+              >
+                <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                  Upscale
+                </p>
+                <div
+                  className="glass-segmented-control grid grid-cols-6 gap-1 p-1"
+                  style={{
+                    "--segment-index-mobile-col": activeUpscaleIndex % 3,
+                    "--segment-index-mobile-row": Math.floor(activeUpscaleIndex / 3),
+                    "--segment-index-desktop": activeUpscaleIndex,
+                  }}
+                >
+                  {upscaleOptions.map((value) => {
+                    const active = options.upscale === value;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => updateOption("upscale", value)}
+                        className={`glass-segment micro-choice w-full h-full px-2 py-2 text-xs font-semibold [font-variant-numeric:tabular-nums] transition ${active
+                          ? "glass-segment-active text-stone-950"
+                          : "text-stone-600"
+                          }`}
+                      >
+                        {value === "auto" ? "Auto" : `${value}x`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Generate button */}
+              <div className="mt-0.5">
+                <GenerateMosaicButton
+                  disabled={isGenerating}
+                  busy={isGenerating}
+                  onClick={handleSubmit}
+                  className="h-9 w-full px-4 text-[0.82rem] font-semibold tracking-[-0.03em] text-stone-950 transition disabled:cursor-not-allowed disabled:opacity-70"
+                />
+              </div>
             </div>
-          </motion.article>
+          </LiquidGlassPanel>
         </section>
       </div>
     </main>

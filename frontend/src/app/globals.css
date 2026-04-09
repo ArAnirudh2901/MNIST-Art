@@ -459,26 +459,42 @@ body * {
 .glass-cta-content {
   position: relative;
   z-index: 2;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.46rem;
   min-width: 10.75rem;
   width: 100%;
 }
 
+.glass-cta-busy-layout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.46rem;
+  width: 100%;
+}
+
+.glass-cta-idle-layout {
+  --glass-cta-side-slot: 2.3rem;
+  display: grid;
+  grid-template-columns: var(--glass-cta-side-slot) minmax(0, 1fr) var(--glass-cta-side-slot);
+  align-items: center;
+  width: 100%;
+}
+
+.glass-cta-side-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .glass-cta-label {
+  display: block;
   text-align: center;
 }
 
 .glass-cta-arrow-slot {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transform: translateY(-50%);
+  justify-self: center;
 }
 
 .glass-cta-arrow {

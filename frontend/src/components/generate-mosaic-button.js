@@ -131,7 +131,7 @@ export default function GenerateMosaicButton({
           className="glass-cta-content"
         >
           {busy ? (
-            <>
+            <span className="glass-cta-busy-layout">
               <span className="glass-cta-loader" aria-hidden="true">
                 {[0, 1, 2].map((index) => (
                   <motion.span
@@ -152,11 +152,15 @@ export default function GenerateMosaicButton({
                 ))}
               </span>
               <span>Generating mosaic...</span>
-            </>
+            </span>
           ) : (
-            <>
+            <span className="glass-cta-idle-layout">
+              <span aria-hidden="true" className="glass-cta-side-slot" />
               <span className="glass-cta-label">Generate mosaic</span>
-              <span aria-hidden="true" className="glass-cta-arrow-slot">
+              <span
+                aria-hidden="true"
+                className="glass-cta-side-slot glass-cta-arrow-slot"
+              >
                 <motion.span
                   className="glass-cta-arrow"
                   animate={
@@ -174,7 +178,7 @@ export default function GenerateMosaicButton({
                   →
                 </motion.span>
               </span>
-            </>
+            </span>
           )}
         </motion.span>
       </AnimatePresence>

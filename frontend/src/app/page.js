@@ -575,6 +575,8 @@ export default function Home() {
   const canvasRef = useRef(null);
   const [hasCanvasContent, setHasCanvasContent] = useState(false);
   const apiStatusRef = useRef("checking");
+  const dragDepthRef = useRef(0);
+  const [isDropTargetActive, setIsDropTargetActive] = useState(false);
 
   const scrollOutputIntoView = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -675,6 +677,8 @@ export default function Home() {
 
   function clearSelectedImage() {
     resetGeneratedState();
+    dragDepthRef.current = 0;
+    setIsDropTargetActive(false);
     setFile(null);
     setSourceMeta(null);
 
@@ -687,6 +691,88 @@ export default function Home() {
       fileInputRef.current.value = "";
     }
   }
+
+  function isImageFile(nextFile) {
+    if (!nextFile) {
+      return false;
+    }
+
+    if (nextFile.type.startsWith("image/")) {
+      return true;
+    }
+
+    return /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i.test(nextFile.name);
+  }
+
+  function hasDraggedFiles(event) {
+    const transfer = event.dataTransfer;
+    const transferTypes = Array.from(transfer?.types || []);
+
+    return (
+      transferTypes.includes("Files") ||
+      transferTypes.includes("application/x-moz-file") ||
+      transferTypes.includes("public.file-url") ||
+      Boolean(transfer?.files?.length)
+    );
+  }
+
+  function stageSourceFile(nextFile) {
+    if (!nextFile) {
+      return false;
+    }
+
+    if (!isImageFile(nextFile)) {
+      toast.error("Unsupported file type", {
+        description: "Drop or select an image file to generate the mosaic preview.",
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return false;
+    }
+
+    if (nextFile.size > MAX_UPLOAD_BYTES) {
+      toast.error("Upload too large", {
+        description: `Choose an image that is ${MAX_UPLOAD_LABEL} or smaller.`,
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return false;
+    }
+
+    dragDepthRef.current = 0;
+    setIsDropTargetActive(false);
+    resetGeneratedState();
+    setSourceMeta(null);
+
+    if (sourceUrl) {
+      URL.revokeObjectURL(sourceUrl);
+      setSourceUrl("");
+    }
+
+    setFile(nextFile);
+    setSourceUrl(URL.createObjectURL(nextFile));
+    return true;
+  }
+
+  useEffect(() => {
+    function preventNativeFileDrop(event) {
+      if (!hasDraggedFiles(event)) {
+        return;
+      }
+
+      event.preventDefault();
+    }
+
+    window.addEventListener("dragover", preventNativeFileDrop);
+    window.addEventListener("drop", preventNativeFileDrop);
+
+    return () => {
+      window.removeEventListener("dragover", preventNativeFileDrop);
+      window.removeEventListener("drop", preventNativeFileDrop);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1108,28 +1194,67 @@ export default function Home() {
       return;
     }
 
-    if (nextFile.size > MAX_UPLOAD_BYTES) {
-      toast.error("Upload too large", {
-        description: `Choose an image that is ${MAX_UPLOAD_LABEL} or smaller.`,
-      });
+    if (!stageSourceFile(nextFile)) {
       event.target.value = "";
-      return;
     }
-
-    resetGeneratedState();
-    setSourceMeta(null);
-
-    if (sourceUrl) {
-      URL.revokeObjectURL(sourceUrl);
-      setSourceUrl("");
-    }
-
-    setFile(nextFile);
-    setSourceUrl(URL.createObjectURL(nextFile));
   }
 
   function openImagePicker() {
     fileInputRef.current?.click();
+  }
+
+  function handleDropZoneDragEnter(event) {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDropTargetActive(true);
+  }
+
+  function handleDropZoneDragOver(event) {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+
+    if (!isDropTargetActive) {
+      setIsDropTargetActive(true);
+    }
+  }
+
+  function handleDropZoneDragLeave(event) {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+
+    if (dragDepthRef.current === 0) {
+      setIsDropTargetActive(false);
+    }
+  }
+
+  function handleDropZoneDrop(event) {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDropTargetActive(false);
+
+    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    const nextFile =
+      droppedFiles.find((candidate) => isImageFile(candidate)) ||
+      droppedFiles[0] ||
+      null;
+
+    stageSourceFile(nextFile);
   }
 
   async function handleSubmit(event) {
@@ -1384,8 +1509,74 @@ export default function Home() {
   const apiStatusLabel = apiStatus === "waking" ? "warming up" : apiStatus;
 
   return (
-    <main className="relative h-screen overflow-hidden bg-white px-4 py-4 text-stone-900 sm:px-6 lg:px-8">
+    <main
+      className="app-shell-drop-target relative h-screen overflow-hidden bg-white px-4 py-4 text-stone-900 sm:px-6 lg:px-8"
+      onDragEnter={handleDropZoneDragEnter}
+      onDragOver={handleDropZoneDragOver}
+      onDragLeave={handleDropZoneDragLeave}
+      onDrop={handleDropZoneDrop}
+    >
       <MnistDigitGridBackground />
+      <AnimatePresence>
+        {isDropTargetActive ? (
+          <motion.div
+            key="global-drop-overlay"
+            initial={
+              prefersReducedMotion
+                ? { opacity: 1 }
+                : { opacity: 0, scale: 0.985 }
+            }
+            animate={{ opacity: 1, scale: 1 }}
+            exit={
+              prefersReducedMotion
+                ? { opacity: 0 }
+                : { opacity: 0, scale: 0.985 }
+            }
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+            className="app-drop-overlay pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-4 py-4 sm:px-6 lg:px-8"
+          >
+            <div className="app-drop-card flex w-full max-w-[34rem] flex-col rounded-[30px] p-4 sm:p-5">
+              <div className="app-drop-card-inner flex flex-col items-center rounded-[24px] px-6 py-8 text-center sm:px-8 sm:py-9">
+                <span className="premium-empty-chip app-drop-overlay-chip">
+                  Source intake
+                </span>
+                <div className="app-drop-icon-shell mt-5">
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    className="app-drop-icon h-14 w-14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M7 18.004a4.5 4.5 0 0 1 .63-8.956A5.5 5.5 0 0 1 18.5 10.5h.5a3.5 3.5 0 1 1 0 7H7Z" />
+                    <path d="M12 15V8.5" />
+                    <path d="m9.5 11 2.5-2.5 2.5 2.5" />
+                  </svg>
+                </div>
+                <div className="mt-5 flex flex-col items-center gap-1.5">
+                  <h3 className="text-[1.05rem] font-semibold tracking-[-0.03em] text-stone-950 sm:text-[1.12rem]">
+                    Drop portrait anywhere to upload
+                  </h3>
+                  <p className="max-w-[18rem] text-sm leading-6 text-stone-600">
+                    Release to load the image into the source preview and keep refining from there.
+                  </p>
+                </div>
+                <div className="app-drop-meta mt-6 flex flex-col items-center gap-2 text-center">
+                  <p className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-stone-500">
+                    JPG, PNG, WebP, HEIC, SVG
+                  </p>
+                  <p className="max-w-[16rem] text-xs leading-5 text-stone-500">
+                    You can also use the Select image control if you prefer clicking instead.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
       <div className="relative z-10 mx-auto flex h-full w-full max-w-[1600px] flex-col gap-3">
         {/* ── Hero bar ── */}
         <section className="flex flex-shrink-0 flex-wrap items-center justify-center gap-3 text-center">
@@ -1440,7 +1631,7 @@ export default function Home() {
                     prefersReducedMotion ? undefined : { scale: 1.004 }
                   }
                   transition={{ type: "spring", stiffness: 280, damping: 24, mass: 0.7 }}
-                  className="premium-preview-frame micro-preview-frame relative flex h-full items-center justify-center overflow-hidden rounded-[16px] border border-white/20 bg-white/[0.02]"
+                  className={`premium-preview-frame micro-preview-frame source-preview-dropzone relative flex h-full items-center justify-center overflow-hidden rounded-[16px] border border-white/20 bg-white/[0.02] ${isDropTargetActive ? "is-drag-active" : ""}`}
                 >
                   {sourceUrl ? (
                     <InspectableImage
@@ -1454,7 +1645,7 @@ export default function Home() {
                     <div className="premium-empty-state px-4 text-center">
                       <span className="premium-empty-chip">Source feed idle</span>
                       <p className="mt-2 max-w-[12rem] text-xs leading-5 text-stone-500">
-                        Upload a portrait to preview.
+                        Drag and drop a portrait anywhere, or use Select image.
                       </p>
                     </div>
                   )}
@@ -1633,7 +1824,9 @@ export default function Home() {
             <div className="flex flex-col gap-1.5">
               {/* Upload section — compact */}
               <div className="glass-block glass-block-strong micro-card-reveal p-2" style={{ "--micro-delay": "90ms" }}>
-                <div className="micro-interactive-surface flex flex-col gap-1.5 p-2 transition">
+                <div
+                  className={`glass-dropzone upload-dropzone micro-interactive-surface flex flex-col gap-2 p-2 transition ${isDropTargetActive ? "is-drag-active" : ""}`}
+                >
                   <span className="text-[0.8rem] font-semibold tracking-[-0.02em] text-stone-950">
                     Source portrait
                   </span>
@@ -1644,7 +1837,7 @@ export default function Home() {
                     onChange={handleFileChange}
                     className="hidden"
                   />
-                  <div className="flex items-center gap-2">
+                  <div className="upload-selection-row flex items-center gap-2">
                     <button
                       type="button"
                       onClick={openImagePicker}
@@ -1673,9 +1866,16 @@ export default function Home() {
                         >
                           ×
                         </button>
-                      ) : null}
+                        ) : null}
                     </div>
                   </div>
+                  <p
+                    className={`upload-drop-hint text-[0.7rem] leading-5 text-stone-500 ${isDropTargetActive ? "is-active" : ""}`}
+                  >
+                    {isDropTargetActive
+                      ? "Release anywhere to load this image into the source preview."
+                      : "Drag and drop an image anywhere on the page, or use Select image."}
+                  </p>
                 </div>
               </div>
 

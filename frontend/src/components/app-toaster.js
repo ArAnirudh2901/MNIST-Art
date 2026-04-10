@@ -10,10 +10,14 @@ export default function AppToaster() {
       richColors={false}
       visibleToasts={4}
       closeButton
+      icons={{
+        loading: <span aria-hidden="true" className="sonner-inline-spinner" />,
+      }}
       toastOptions={{
         unstyled: true,
         classNames: {
           toast: "sonner-toast",
+          loader: "sonner-toast-loader",
           title: "sonner-toast-title",
           description: "sonner-toast-description",
           closeButton: "sonner-toast-close",

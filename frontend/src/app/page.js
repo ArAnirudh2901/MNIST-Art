@@ -10,7 +10,7 @@ import InspectableImage from "@/components/inspectable-image";
 import LiquidGlassPanel from "@/components/liquid-glass-panel";
 import MnistDigitGridBackground from "@/components/mnist-digit-grid-background";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 const TARGET_OUTPUT_PX = 3000;
 const UPSCALE_MIN = 1;
 const UPSCALE_MAX = 5;

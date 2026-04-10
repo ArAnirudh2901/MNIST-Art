@@ -587,6 +587,14 @@ def _row_callback_for_job(job_id: str):
     return _on_row
 
 
+def _preview_callback_for_job(job_id: str):
+    """Return a preview callback that stores partial mosaic snapshots for polling."""
+    def _on_preview(jpeg_bytes: bytes, done_rows: int, total_rows: int) -> None:
+        with JOBS_LOCK:
+            PREVIEW_CACHE[job_id] = (jpeg_bytes, done_rows, total_rows)
+    return _on_preview
+
+
 def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -> None:
     # Initialize the row buffer before processing begins.
     with JOBS_LOCK:
@@ -640,6 +648,7 @@ def _run_mosaic_job(job_id: str, image_bytes: bytes, settings: MosaicSettings) -
             library,
             settings,
             lambda payload: _job_progress_callback(job_id, payload),
+            preview_callback=_preview_callback_for_job(job_id),
             row_callback=_row_callback_for_job(job_id),
         )
         _raise_if_job_cancelled(job_id)

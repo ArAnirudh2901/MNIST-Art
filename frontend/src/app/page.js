@@ -554,6 +554,7 @@ export default function Home() {
   const [file, setFile] = useState(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceMeta, setSourceMeta] = useState(null);
+  const [livePreviewUrl, setLivePreviewUrl] = useState("");
   const [resultUrl, setResultUrl] = useState("");
   const [resultMeta, setResultMeta] = useState(null);
   const [apiStatus, setApiStatus] = useState("checking");
@@ -563,6 +564,8 @@ export default function Home() {
   const [activeJobId, setActiveJobId] = useState("");
   const [submittedOptions, setSubmittedOptions] = useState(null);
   const [options, setOptions] = useState(defaultOptions);
+  const livePreviewUrlRef = useRef("");
+  const livePreviewRowsRef = useRef(0);
   const resultUrlRef = useRef("");
   const jobToastIdRef = useRef(null);
   const hasShownOfflineToastRef = useRef(false);
@@ -611,6 +614,17 @@ export default function Home() {
     setApiStatus(nextStatus);
   }
 
+  const clearLivePreviewState = useCallback(() => {
+    livePreviewRowsRef.current = 0;
+
+    if (livePreviewUrlRef.current) {
+      URL.revokeObjectURL(livePreviewUrlRef.current);
+      livePreviewUrlRef.current = "";
+    }
+
+    setLivePreviewUrl("");
+  }, []);
+
   function resetGeneratedState() {
     pendingCancellationRef.current = false;
     setIsCancelling(false);
@@ -625,6 +639,7 @@ export default function Home() {
       resultUrlRef.current = "";
     }
 
+    clearLivePreviewState();
     setResultUrl("");
     setResultMeta(null);
     setHasCanvasContent(false);
@@ -660,7 +675,7 @@ export default function Home() {
     return response.json();
   }
 
-  function applyCancelledJobState(job) {
+  const applyCancelledJobState = useCallback((job) => {
     pendingCancellationRef.current = false;
     setIsCancelling(false);
     startTransition(() => {
@@ -673,7 +688,8 @@ export default function Home() {
     jobToastIdRef.current = null;
     setActiveJobId("");
     setIsGenerating(false);
-  }
+    clearLivePreviewState();
+  }, [clearLivePreviewState]);
 
   function clearSelectedImage() {
     resetGeneratedState();
@@ -921,6 +937,10 @@ export default function Home() {
   }, [apiStatus]);
 
   useEffect(() => {
+    livePreviewUrlRef.current = livePreviewUrl;
+  }, [livePreviewUrl]);
+
+  useEffect(() => {
     resultUrlRef.current = resultUrl;
   }, [resultUrl]);
 
@@ -931,6 +951,14 @@ export default function Home() {
       }
     };
   }, [sourceUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (livePreviewUrl) {
+        URL.revokeObjectURL(livePreviewUrl);
+      }
+    };
+  }, [livePreviewUrl]);
 
   useEffect(() => {
     return () => {
@@ -1111,6 +1139,7 @@ export default function Home() {
           }
           resultUrlRef.current = nextResultUrl;
 
+          clearLivePreviewState();
           setResultUrl(nextResultUrl);
           setResultMeta({
             width: job.metadata.width,
@@ -1152,6 +1181,7 @@ export default function Home() {
           setIsGenerating(false);
           setActiveJobId("");
           setHasCanvasContent(false);
+          clearLivePreviewState();
           return;
         }
 
@@ -1172,6 +1202,7 @@ export default function Home() {
         jobToastIdRef.current = null;
         setIsGenerating(false);
         setActiveJobId("");
+        clearLivePreviewState();
       }
     }
 
@@ -1182,7 +1213,72 @@ export default function Home() {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [activeJobId, submittedOptions, options.gamma, options.contrast, options.bgThresh]);
+  }, [activeJobId, applyCancelledJobState, clearLivePreviewState, submittedOptions, options.gamma, options.contrast, options.bgThresh]);
+
+  useEffect(() => {
+    if (!activeJobId || !isGenerating) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timeoutId;
+
+    async function pollPreview() {
+      try {
+        const response = await fetch(`${API_URL}/api/mosaic/jobs/${activeJobId}/preview`, {
+          cache: "no-store",
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        if (response.ok) {
+          const previewRows = Number(response.headers.get("X-Preview-Rows") || "0");
+
+          if (
+            previewRows > 0
+            && previewRows !== livePreviewRowsRef.current
+          ) {
+            const blob = await response.blob();
+            if (cancelled) {
+              return;
+            }
+
+            const nextPreviewUrl = URL.createObjectURL(blob);
+            if (livePreviewUrlRef.current) {
+              URL.revokeObjectURL(livePreviewUrlRef.current);
+            }
+            livePreviewUrlRef.current = nextPreviewUrl;
+            livePreviewRowsRef.current = previewRows;
+            setLivePreviewUrl(nextPreviewUrl);
+          }
+        } else if (![404, 409].includes(response.status)) {
+          throw new Error("Unable to read live mosaic preview.");
+        }
+      } catch {
+        if (cancelled) {
+          return;
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = window.setTimeout(
+            pollPreview,
+            hasCanvasContent ? 650 : 280,
+          );
+        }
+      }
+    }
+
+    pollPreview();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [activeJobId, hasCanvasContent, isGenerating]);
 
   function updateOption(key, value) {
     setOptions((current) => ({ ...current, [key]: value }));
@@ -1312,6 +1408,7 @@ export default function Home() {
         URL.revokeObjectURL(resultUrlRef.current);
         resultUrlRef.current = "";
       }
+      clearLivePreviewState();
       setResultUrl("");
       setResultMeta(null);
 
@@ -1367,6 +1464,7 @@ export default function Home() {
       setJobState(null);
       setActiveJobId("");
       setIsGenerating(false);
+      clearLivePreviewState();
     }
   }
 
@@ -1507,6 +1605,7 @@ export default function Home() {
     ]
     : [];
   const apiStatusLabel = apiStatus === "waking" ? "warming up" : apiStatus;
+  const hasLivePreviewContent = hasCanvasContent || Boolean(livePreviewUrl);
 
   return (
     <main
@@ -1727,16 +1826,25 @@ export default function Home() {
                     </div>
                   ) : isGenerating ? (
                     <>
+                      {livePreviewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={livePreviewUrl}
+                          alt=""
+                          aria-hidden="true"
+                          className="live-preview-image"
+                        />
+                      ) : null}
                       <canvas
                         ref={canvasRef}
                         className="live-preview-canvas"
                       />
-                      {!hasCanvasContent && (
+                      {!hasLivePreviewContent && (
                         <div className="live-preview-overlay absolute inset-0 z-10 flex items-center justify-center">
                           <div className="premium-empty-state px-4 text-center">
                             <span className="premium-empty-chip">Fabricating…</span>
                             <p className="mt-2 max-w-[12rem] text-xs leading-5 text-stone-500">
-                              Mosaic preview will appear shortly.
+                              Live mosaic preview will appear shortly.
                             </p>
                           </div>
                         </div>

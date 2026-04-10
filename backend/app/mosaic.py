@@ -349,6 +349,32 @@ def _encode_row_strip(
     }
 
 
+def _encode_preview_snapshot(canvas: np.ndarray, max_side: int = 1200) -> bytes:
+    preview_frame = canvas
+    height, width = preview_frame.shape[:2]
+    longest_side = max(height, width)
+
+    if longest_side > max_side:
+        scale = max_side / longest_side
+        preview_width = max(1, int(round(width * scale)))
+        preview_height = max(1, int(round(height * scale)))
+        preview_frame = cv2.resize(
+            preview_frame,
+            (preview_width, preview_height),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    encoded, jpeg = cv2.imencode(
+        ".jpg",
+        preview_frame,
+        [cv2.IMWRITE_JPEG_QUALITY, 76],
+    )
+    if not encoded:
+        return b""
+
+    return jpeg.tobytes()
+
+
 def generate_mosaic_bytes(
     image_bytes: bytes,
     library: MNISTLibrary,
@@ -434,8 +460,14 @@ def generate_mosaic_bytes(
     # to avoid flooding the poll endpoint while still looking smooth.
     emit_interval = max(1, total_tiles // 80)
 
-    # Preview: generate a JPEG snapshot every N rows.
-    preview_row_interval = 5
+    # Preview: generate JPEG snapshots throughout assembly so the frontend
+    # can show the mosaic building up even when SSE row delivery is delayed.
+    if rows <= 40:
+        preview_row_interval = 1
+    elif rows <= 90:
+        preview_row_interval = 2
+    else:
+        preview_row_interval = 3
     last_preview_row = -preview_row_interval  # force first preview early
 
     def _current_fraction() -> float:
@@ -507,8 +539,14 @@ def generate_mosaic_bytes(
                 )
 
         # After finishing each row, generate a preview snapshot every N rows.
-        if preview_callback is not None and (row - last_preview_row) >= preview_row_interval:
-            jpeg_bytes = b""  # Legacy preview path (kept for compatibility)
+        if (
+            preview_callback is not None
+            and (
+                (row - last_preview_row) >= preview_row_interval
+                or row == rows - 1
+            )
+        ):
+            jpeg_bytes = _encode_preview_snapshot(canvas)
             if jpeg_bytes:
                 preview_callback(jpeg_bytes, row + 1, rows)
             last_preview_row = row

@@ -91,6 +91,8 @@ cp .env.example .env
 Notes:
 
 - The backend runs on `http://127.0.0.1:8000` by default.
+- Local frontend dev servers on alternate localhost ports such as `3001` are
+  also accepted by default, so a port shift in `next dev` does not trip CORS.
 - The first request may take longer because the backend may need to download the
   raw MNIST IDX files and build the in-memory glyph library.
 
@@ -209,7 +211,7 @@ Notes:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed frontend origins |
-| `CORS_ALLOW_ORIGIN_REGEX` | unset | Optional regex-based CORS allowlist, useful for Vercel preview domains |
+| `CORS_ALLOW_ORIGIN_REGEX` | local localhost/127.0.0.1 dev ports when `CORS_ALLOW_ORIGINS` is unset; otherwise unset | Optional regex-based CORS allowlist, useful for Vercel preview domains |
 | `MAX_UPLOAD_BYTES` | `20971520` | Maximum upload size in bytes (`20 MB`) |
 | `JOB_TTL_SECONDS` | `3600` | How long completed or failed jobs remain available |
 | `JOB_WORKERS` | `2` | Number of background worker threads for mosaic jobs |

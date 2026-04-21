@@ -29,6 +29,7 @@ DEFAULT_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+LOCAL_DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 EXPOSED_HEADERS = [
     "Content-Disposition",
     "X-Mosaic-Width",
@@ -44,12 +45,16 @@ EXPOSED_HEADERS = [
     "X-Preview-Total-Rows",
 ]
 
+configured_origins = os.getenv("CORS_ALLOW_ORIGINS")
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("CORS_ALLOW_ORIGINS", ",".join(DEFAULT_ORIGINS)).split(",")
+    for origin in (configured_origins or ",".join(DEFAULT_ORIGINS)).split(",")
     if origin.strip()
 ]
-allowed_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or None
+configured_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip()
+allowed_origin_regex = configured_origin_regex or (
+    LOCAL_DEV_ORIGIN_REGEX if configured_origins is None else None
+)
 max_upload_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 job_ttl_seconds = int(os.getenv("JOB_TTL_SECONDS", "3600"))
 job_worker_count = int(os.getenv("JOB_WORKERS", "2"))

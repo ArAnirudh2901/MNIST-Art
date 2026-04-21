@@ -214,6 +214,16 @@ function formatFileSize(bytes) {
   return `${formatDecimal(value)} ${units[unitIndex]}`;
 }
 
+function describeApiRequestFailure(error, fallbackMessage) {
+  const message = error instanceof Error ? error.message : "";
+
+  if (message && !["Failed to fetch", "Load failed"].includes(message)) {
+    return message;
+  }
+
+  return fallbackMessage || `Could not reach the mosaic backend at ${API_URL}. Make sure the FastAPI server is running and that this frontend origin is allowed by CORS.`;
+}
+
 function decodeBase64Image(base64Value) {
   const binary = window.atob(base64Value);
   const bytes = new Uint8Array(binary.length);
@@ -1457,8 +1467,10 @@ export default function Home() {
     } catch (submitError) {
       toast.error("Unable to start the mosaic job", {
         id: jobToastIdRef.current ?? undefined,
-        description:
-          submitError.message || "Something went wrong while generating the mosaic.",
+        description: describeApiRequestFailure(
+          submitError,
+          `Could not reach the mosaic backend at ${API_URL}. Make sure the FastAPI server is running and that this frontend origin is allowed by CORS.`,
+        ),
       });
       jobToastIdRef.current = null;
       setJobState(null);

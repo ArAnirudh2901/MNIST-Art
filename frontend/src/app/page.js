@@ -1095,7 +1095,7 @@ export default function Home() {
         eventSource = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeJobId]);
 
   // ── Job status poller ──
@@ -1699,9 +1699,9 @@ export default function Home() {
               ? "border border-emerald-200/70 bg-emerald-100/70 text-emerald-800"
               : apiStatus === "waking"
                 ? "border border-amber-200/70 bg-amber-100/70 text-amber-800"
-              : apiStatus === "offline"
-                ? "border border-rose-200/70 bg-rose-100/70 text-rose-800"
-                : "border border-stone-200/70 bg-stone-100/70 text-stone-700"
+                : apiStatus === "offline"
+                  ? "border border-rose-200/70 bg-rose-100/70 text-rose-800"
+                  : "border border-stone-200/70 bg-stone-100/70 text-stone-700"
               }`}
           >
             Backend {apiStatusLabel}
@@ -1934,18 +1934,34 @@ export default function Home() {
           </div>
 
           {/* ── RIGHT: Compact controls sidebar ── */}
-          <LiquidGlassPanel
-            as="form"
-            onSubmit={handleSubmit}
-            data-background-static-zone
-            className="liquid-glass-panel micro-panel-enter relative flex w-full flex-col overflow-y-auto overflow-x-hidden rounded-[22px] px-3 py-3 text-left text-stone-950 lg:sticky lg:top-4"
+          <div
+            className="flex w-full min-h-0 flex-col gap-3 lg:sticky lg:top-4"
             style={{ maxHeight: "calc(100vh - 6rem)" }}
           >
-            <div className="flex flex-col gap-1.5">
-              {/* Upload section — compact */}
-              <div className="glass-block glass-block-strong micro-card-reveal p-2" style={{ "--micro-delay": "90ms" }}>
+            <div
+              data-background-static-zone
+              className="micro-card-reveal flex-shrink-0"
+              style={{ "--micro-delay": "80ms" }}
+            >
+              <GenerateMosaicButton
+                disabled={isGenerating}
+                busy={isGenerating}
+                onClick={handleSubmit}
+                className="h-10 w-full px-4 text-[0.84rem] font-semibold tracking-[-0.03em] text-stone-950 transition disabled:cursor-not-allowed disabled:opacity-70"
+              />
+            </div>
+
+            <LiquidGlassPanel
+              as="form"
+              onSubmit={handleSubmit}
+              data-background-static-zone
+              className="liquid-glass-panel micro-panel-enter relative flex min-h-0 w-full flex-1 flex-col overflow-y-auto overflow-x-hidden rounded-[22px] px-3 py-3 text-left text-stone-950"
+            >
+              <div className="flex flex-col gap-1.5">
+                {/* Upload section — compact */}
                 <div
-                  className={`glass-dropzone upload-dropzone micro-interactive-surface flex flex-col gap-2 p-2 transition ${isDropTargetActive ? "is-drag-active" : ""}`}
+                  className={`glass-dropzone upload-dropzone micro-card-reveal micro-interactive-surface flex flex-col gap-3 px-4 py-4 transition ${isDropTargetActive ? "is-drag-active" : ""}`}
+                  style={{ "--micro-delay": "90ms" }}
                 >
                   <span className="text-[0.8rem] font-semibold tracking-[-0.02em] text-stone-950">
                     Source portrait
@@ -1986,7 +2002,7 @@ export default function Home() {
                         >
                           ×
                         </button>
-                        ) : null}
+                      ) : null}
                     </div>
                   </div>
                   <p
@@ -1997,170 +2013,161 @@ export default function Home() {
                       : "Drag and drop an image anywhere on the page, or use Select image."}
                   </p>
                 </div>
-              </div>
 
-              <div className="mx-2 border-t border-stone-200/40" />
+                <div className="mx-2 border-t border-stone-200/40" />
 
-              {/* Presets row */}
-              <div
-                className="glass-block glass-block-strong micro-card-reveal px-3 py-2"
-                style={{ "--micro-delay": "100ms" }}
-              >
-                <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
-                  Preset
-                </p>
-                <div className="flex gap-1.5">
-                  {presets.map((preset) => {
-                    const isActive =
-                      options.tileSize === preset.tileSize &&
-                      options.gamma === preset.gamma &&
-                      options.contrast === preset.contrast &&
-                      options.bgThresh === preset.bgThresh;
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() =>
-                          setOptions((prev) => ({
-                            ...prev,
-                            tileSize: preset.tileSize,
-                            gamma: preset.gamma,
-                            contrast: preset.contrast,
-                            bgThresh: preset.bgThresh,
-                          }))
-                        }
-                        className={`glass-preset-btn flex-1 py-1 text-[0.72rem] font-semibold transition ${isActive ? "is-active" : "text-stone-600"
-                          }`}
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Structure group: Tile size + Bg threshold */}
-              <div
-                className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
-                style={{ "--micro-delay": "140ms" }}
-              >
-                <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
-                  Structure
-                </p>
-                {structureControls.map((control) => (
-                  <label key={control.id} className="block">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
-                        {control.label}
-                      </p>
-                      <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
-                        {options[control.id]}
-                      </span>
-                    </div>
-                    <GlassSlider
-                      id={control.id}
-                      min={control.min}
-                      max={control.max}
-                      step={control.step}
-                      value={options[control.id]}
-                      onChange={(event) =>
-                        updateOption(
-                          control.id,
-                          control.step < 1
-                            ? Number(event.target.value)
-                            : parseInt(event.target.value, 10),
-                        )
-                      }
-                      className="mt-1 mb-1"
-                    />
-                  </label>
-                ))}
-              </div>
-
-              {/* Tone group: Gamma + CLAHE */}
-              <div
-                className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
-                style={{ "--micro-delay": "180ms" }}
-              >
-                <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
-                  Tone mapping
-                </p>
-                {toneControls.map((control) => (
-                  <label key={control.id} className="block">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
-                        {control.label}
-                      </p>
-                      <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
-                        {options[control.id]}
-                      </span>
-                    </div>
-                    <GlassSlider
-                      id={control.id}
-                      min={control.min}
-                      max={control.max}
-                      step={control.step}
-                      value={options[control.id]}
-                      onChange={(event) =>
-                        updateOption(
-                          control.id,
-                          control.step < 1
-                            ? Number(event.target.value)
-                            : parseInt(event.target.value, 10),
-                        )
-                      }
-                      className="mt-1 mb-1"
-                    />
-                  </label>
-                ))}
-              </div>
-
-              {/* Upscale */}
-              <div
-                className="glass-block glass-upscale-block micro-card-reveal micro-interactive-surface px-3 py-2"
-                style={{ "--micro-delay": "220ms" }}
-              >
-                <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
-                  Upscale
-                </p>
+                {/* Presets row */}
                 <div
-                  className="glass-segmented-control grid grid-cols-6 gap-1 p-1"
-                  style={{
-                    "--segment-index-mobile-col": activeUpscaleIndex % 3,
-                    "--segment-index-mobile-row": Math.floor(activeUpscaleIndex / 3),
-                    "--segment-index-desktop": activeUpscaleIndex,
-                  }}
+                  className="glass-block glass-block-strong micro-card-reveal px-3 py-2"
+                  style={{ "--micro-delay": "100ms" }}
                 >
-                  {upscaleOptions.map((value) => {
-                    const active = options.upscale === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        onClick={() => updateOption("upscale", value)}
-                        className={`glass-segment micro-choice w-full h-full px-2 py-2 text-xs font-semibold [font-variant-numeric:tabular-nums] transition ${active
-                          ? "glass-segment-active text-stone-950"
-                          : "text-stone-600"
-                          }`}
-                      >
-                        {value === "auto" ? "Auto" : `${value}x`}
-                      </button>
-                    );
-                  })}
+                  <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                    Preset
+                  </p>
+                  <div className="flex gap-1.5">
+                    {presets.map((preset) => {
+                      const isActive =
+                        options.tileSize === preset.tileSize &&
+                        options.gamma === preset.gamma &&
+                        options.contrast === preset.contrast &&
+                        options.bgThresh === preset.bgThresh;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() =>
+                            setOptions((prev) => ({
+                              ...prev,
+                              tileSize: preset.tileSize,
+                              gamma: preset.gamma,
+                              contrast: preset.contrast,
+                              bgThresh: preset.bgThresh,
+                            }))
+                          }
+                          className={`glass-preset-btn flex-1 py-1 text-[0.72rem] font-semibold transition ${isActive ? "is-active" : "text-stone-600"
+                            }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
 
-              {/* Generate button */}
-              <div className="mt-0.5">
-                <GenerateMosaicButton
-                  disabled={isGenerating}
-                  busy={isGenerating}
-                  onClick={handleSubmit}
-                  className="h-9 w-full px-4 text-[0.82rem] font-semibold tracking-[-0.03em] text-stone-950 transition disabled:cursor-not-allowed disabled:opacity-70"
-                />
+                {/* Structure group: Tile size + Bg threshold */}
+                <div
+                  className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
+                  style={{ "--micro-delay": "140ms" }}
+                >
+                  <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                    Structure
+                  </p>
+                  {structureControls.map((control) => (
+                    <label key={control.id} className="block">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
+                          {control.label}
+                        </p>
+                        <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
+                          {options[control.id]}
+                        </span>
+                      </div>
+                      <GlassSlider
+                        id={control.id}
+                        min={control.min}
+                        max={control.max}
+                        step={control.step}
+                        value={options[control.id]}
+                        onChange={(event) =>
+                          updateOption(
+                            control.id,
+                            control.step < 1
+                              ? Number(event.target.value)
+                              : parseInt(event.target.value, 10),
+                          )
+                        }
+                        className="mt-1 mb-1"
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                {/* Tone group: Gamma + CLAHE */}
+                <div
+                  className="glass-block glass-control-block glass-slider-block micro-card-reveal micro-interactive-surface micro-slider-shell px-3 py-2"
+                  style={{ "--micro-delay": "180ms" }}
+                >
+                  <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                    Tone mapping
+                  </p>
+                  {toneControls.map((control) => (
+                    <label key={control.id} className="block">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-[0.72rem] font-medium tracking-[-0.01em] text-stone-700">
+                          {control.label}
+                        </p>
+                        <span className="glass-value-pill glass-control-value glass-slider-value micro-pill inline-flex min-w-[2.4rem] items-center justify-center text-[0.78rem] font-bold text-stone-950 [font-variant-numeric:tabular-nums]">
+                          {options[control.id]}
+                        </span>
+                      </div>
+                      <GlassSlider
+                        id={control.id}
+                        min={control.min}
+                        max={control.max}
+                        step={control.step}
+                        value={options[control.id]}
+                        onChange={(event) =>
+                          updateOption(
+                            control.id,
+                            control.step < 1
+                              ? Number(event.target.value)
+                              : parseInt(event.target.value, 10),
+                          )
+                        }
+                        className="mt-1 mb-1"
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                {/* Upscale */}
+                <div
+                  className="glass-block glass-upscale-block micro-card-reveal micro-interactive-surface px-3 py-2"
+                  style={{ "--micro-delay": "220ms" }}
+                >
+                  <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-stone-500">
+                    Upscale
+                  </p>
+                  <div
+                    className="glass-segmented-control grid grid-cols-6 gap-1 p-1"
+                    style={{
+                      "--segment-index-mobile-col": activeUpscaleIndex % 3,
+                      "--segment-index-mobile-row": Math.floor(activeUpscaleIndex / 3),
+                      "--segment-index-desktop": activeUpscaleIndex,
+                    }}
+                  >
+                    {upscaleOptions.map((value) => {
+                      const active = options.upscale === value;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => updateOption("upscale", value)}
+                          className={`glass-segment micro-choice w-full h-full px-2 py-2 text-xs font-semibold [font-variant-numeric:tabular-nums] transition ${active
+                            ? "glass-segment-active text-stone-950"
+                            : "text-stone-600"
+                            }`}
+                        >
+                          {value === "auto" ? "Auto" : `${value}x`}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
               </div>
-            </div>
-          </LiquidGlassPanel>
+            </LiquidGlassPanel>
+          </div>
         </section>
       </div>
     </main>
